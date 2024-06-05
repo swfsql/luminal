@@ -20,7 +20,7 @@ pub struct TransformerEncoderBlock<const DIM: usize, const FF: usize, const HEAD
 impl<const DIM: usize, const FF: usize, const HEADS: usize> InitModule
     for TransformerEncoderBlock<DIM, FF, HEADS>
 {
-    fn initialize(cx: &mut Graph) -> Self {
+    fn initialize(cx: &GraphWrapper) -> Self {
         Self {
             attention: InitModule::initialize(cx),
             ff: InitModule::initialize(cx),
@@ -57,9 +57,9 @@ impl<const DIM: usize, const FF: usize, const HEADS: usize, S: Dimension, B: Dim
     type Output = GraphTensor<(B, S, Const<DIM>)>;
 
     fn forward(&self, x: GraphTensor<(B, S, Const<DIM>)>) -> Self::Output {
-        let x = x + self.attention.forward(x);
+        let x = x.clone() + self.attention.forward(x);
         let x = x.layer_norm::<Axis<2>, _>(1e-5);
-        let x = x + self.ff.forward(x);
+        let x = x.clone() + self.ff.forward(x);
         x.layer_norm::<Axis<2>, _>(1e-5)
     }
 }
@@ -80,37 +80,43 @@ mod tests {
     use super::TransformerEncoderBlock;
     #[test]
     fn test_transformer_encoder_block() {
-        let mut cx = Graph::new();
-        let model: TransformerEncoderBlock<3, 4, 1> = InitModule::initialize(&mut cx);
+        let cx = Graph::new();
+        let model: TransformerEncoderBlock<3, 4, 1> = InitModule::initialize(&cx);
         model
             .attention
             .w_k
             .weight
+            .clone()
             .set(vec![1., 22., 3., 1., 2., 3., 1., 2., 3.]);
         model
             .attention
             .w_q
             .weight
+            .clone()
             .set(vec![3., 2., 3., 1.3, 2., 3., 3., 2., 3.]);
         model
             .attention
             .w_v
             .weight
+            .clone()
             .set(vec![-1., 12., 3., -1., 2., -3., 11., 2., 3.]);
         model
             .attention
             .w_o
             .weight
+            .clone()
             .set(vec![1., 22., 3., 1., 2., 3., 1., 2., 3.]);
         model
             .ff
             .0
             .weight
+            .clone()
             .set(vec![-1., 12., 3., -1., 2., -3., 11., 2., 3., 11., 2., 3.]);
         model
             .ff
             .2
             .weight
+            .clone()
             .set(vec![-1., 12., 3., -1., 2., -3., 11., 2., 3., 3., -1., 2.]);
 
         let a = cx

@@ -8,7 +8,7 @@ pub struct Linear<const A: usize, const B: usize> {
 }
 
 impl<const A: usize, const B: usize> InitModule for Linear<A, B> {
-    fn initialize(cx: &mut Graph) -> Self {
+    fn initialize(cx: &GraphWrapper) -> Self {
         // Init weight as uniform(-1, 1)
         let mut rng = thread_rng();
         Self {
@@ -23,7 +23,7 @@ impl<const A: usize, const B: usize> InitModule for Linear<A, B> {
 
 impl<const A: usize, const B: usize> SerializeModule for Linear<A, B> {
     fn serialize(&self, s: &mut luminal::module::Serializer) {
-        s.tensor("weight", self.weight);
+        s.tensor("weight", self.weight.clone());
     }
 }
 
@@ -34,7 +34,7 @@ where
     type Output = <GraphTensor<S> as Matmul<R2<A, B>>>::Output;
 
     fn forward(&self, input: GraphTensor<S>) -> Self::Output {
-        input.matmul(self.weight)
+        input.matmul(self.weight.clone())
     }
 }
 
@@ -44,7 +44,7 @@ pub struct PermutedLinear<const A: usize, const B: usize> {
 }
 
 impl<const A: usize, const B: usize> InitModule for PermutedLinear<A, B> {
-    fn initialize(cx: &mut Graph) -> Self {
+    fn initialize(cx: &GraphWrapper) -> Self {
         // Init weight as uniform(-1, 1)
         let mut rng = thread_rng();
         Self {
@@ -59,7 +59,7 @@ impl<const A: usize, const B: usize> InitModule for PermutedLinear<A, B> {
 
 impl<const A: usize, const B: usize> SerializeModule for PermutedLinear<A, B> {
     fn serialize(&self, s: &mut luminal::module::Serializer) {
-        s.tensor("weight", self.weight);
+        s.tensor("weight", self.weight.clone());
     }
 }
 
@@ -70,7 +70,7 @@ where
     type Output = <GraphTensor<S> as Matmul<R2<A, B>>>::Output;
 
     fn forward(&self, input: GraphTensor<S>) -> Self::Output {
-        input.matmul(self.weight.permute())
+        input.matmul(self.weight.clone().permute())
     }
 }
 
@@ -80,13 +80,13 @@ mod tests {
     use luminal::{prelude::*, tests::assert_close};
     #[test]
     fn test_linear() {
-        let mut cx = Graph::new();
+        let cx = Graph::new();
         let batch = cx
             .tensor::<R2<2, 3>>()
             .set(vec![1.0, 2.0, 3.0, 1.0, 2.0, 3.0]);
         let a = cx.tensor::<R1<3>>().set(vec![1.0, 2.0, 3.0]);
 
-        let model: Linear<3, 4> = Linear::initialize(&mut cx);
+        let model: Linear<3, 4> = Linear::initialize(&cx);
         let mut b = model.forward(a).retrieve();
         let mut batch_out = model.forward(batch).retrieve();
 

@@ -16,6 +16,7 @@ impl<S: Shape> GraphTensor<S> {
         for dim in Ax::as_array().into_iter().collect_vec().into_iter().rev() {
             new_id = self
                 .graph()
+                .unwrap()
                 .add_op(op::SumReduce(dim))
                 .input(new_id, 0, shape)
                 .finish();
@@ -35,6 +36,7 @@ impl<S: Shape> GraphTensor<S> {
         for dim in Ax::as_array().into_iter().collect_vec().into_iter().rev() {
             new_id = self
                 .graph()
+                .unwrap()
                 .add_op(op::MaxReduce(dim))
                 .input(new_id, 0, shape)
                 .finish();
@@ -54,19 +56,26 @@ impl<S: Shape> GraphTensor<S> {
             // Sum reduce
             node_id = self
                 .graph()
+                .unwrap()
                 .add_op(op::SumReduce(dim))
                 .input(node_id, 0, shape)
                 .finish();
 
             // Divide by size of dimension
-            let div_tensor = self.graph().constant_expr(shape.remove_dim(dim)).id;
+            let div_tensor = self
+                .graph()
+                .unwrap()
+                .constant_expr(shape.remove_dim(dim))
+                .id;
             let mul_tensor = self
                 .graph()
+                .unwrap()
                 .add_op(op::Recip)
                 .input(div_tensor, 0, ShapeTracker::new(&[]))
                 .finish();
             node_id = self
                 .graph()
+                .unwrap()
                 .add_op(op::Mul)
                 .input(node_id, 0, shape)
                 .input(
@@ -92,12 +101,11 @@ mod tests {
 
     #[test]
     fn test_sum_reduce() {
-        let mut cx = Graph::new();
+        let cx = Graph::new();
         let a_data = random_vec(6);
         let a = cx.tensor::<R2<2, 3>>();
-        a.set(a_data.clone());
-        let b = a.sum_reduce::<_, LAxis<1>>();
-        b.retrieve();
+        let a = a.set(a_data.clone());
+        let b = a.sum_reduce::<_, LAxis<1>>().retrieve();
 
         cx.execute();
 
@@ -110,12 +118,11 @@ mod tests {
 
     #[test]
     fn test_max_reduce() {
-        let mut cx = Graph::new();
+        let cx = Graph::new();
         let a_data = random_vec(6);
         let a = cx.tensor::<R2<2, 3>>();
-        a.set(a_data.clone());
-        let b = a.max_reduce::<_, LAxis<1>>();
-        b.retrieve();
+        let a = a.set(a_data.clone());
+        let b = a.max_reduce::<_, LAxis<1>>().retrieve();
 
         cx.execute();
 
@@ -128,12 +135,11 @@ mod tests {
 
     #[test]
     fn test_mean_reduce() {
-        let mut cx = Graph::new();
+        let cx = Graph::new();
         let a_data = random_vec(6);
         let a = cx.tensor::<R2<2, 3>>();
-        a.set(a_data.clone());
-        let b = a.mean_reduce::<_, LAxis<1>>();
-        b.retrieve();
+        let a = a.set(a_data.clone());
+        let b = a.mean_reduce::<_, LAxis<1>>().retrieve();
 
         cx.execute();
 

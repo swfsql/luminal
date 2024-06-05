@@ -10,7 +10,7 @@ pub struct MatMul2DCompiler;
 
 impl Compiler for MatMul2DCompiler {
     type Output = ();
-    fn compile<T: ToIdsMut>(&self, graph: &mut Graph, mut ids: T) {
+    fn compile<T: ToIdsMut>(&self, graph: &GraphWrapper, mut ids: T) {
         // Look for the matmul pattern
         // Mul ([A, C(fake), B] | [A(fake), C, B]) -> SumReduce(2) -> [A, C]
         // Actually starts at [A,B] | [B, C]
@@ -35,7 +35,7 @@ impl Compiler for MatMul2DCompiler {
             }
             let (mul, sum_reduce) = (s.get(&mul), s.get(&sum_reduce));
             // Insert MatMul2D op
-            let mut srcs = graph.get_sources(mul);
+            let mut srcs = graph.borrow().get_sources(mul);
             // Undo expansions and permute
             srcs[0].2.remove_dim(1);
             srcs[1].2.remove_dim(0);
@@ -47,13 +47,14 @@ impl Compiler for MatMul2DCompiler {
                 .finish();
 
             // Create edges to dests
-            move_outgoing_edge(sum_reduce, new_op, graph);
-            remap(sum_reduce, new_op, &mut ids, graph);
-            remap(mul, new_op, &mut ids, graph);
+            let mut graph_mut = graph.borrow_mut();
+            move_outgoing_edge(sum_reduce, new_op, &mut graph_mut);
+            remap(sum_reduce, new_op, &mut ids, &mut graph_mut);
+            remap(mul, new_op, &mut ids, &mut graph_mut);
 
             // Remove the old ops
-            graph.graph.remove_node(sum_reduce);
-            graph.safe_remove_node(mul, 0);
+            graph_mut.graph.remove_node(sum_reduce);
+            graph_mut.safe_remove_node(mul, 0);
         }
     }
 }
@@ -96,7 +97,7 @@ pub struct BatchMatMul2DCompiler;
 
 impl Compiler for BatchMatMul2DCompiler {
     type Output = ();
-    fn compile<T: ToIdsMut>(&self, graph: &mut Graph, mut ids: T) {
+    fn compile<T: ToIdsMut>(&self, graph: &GraphWrapper, mut ids: T) {
         // Look for the matmul pattern
         // Mul ([A, C(fake), B] | [A(fake), C, B]) -> SumReduce(2) -> [A, C]
         // Actually starts at [A,B] | [B, C]
@@ -121,7 +122,7 @@ impl Compiler for BatchMatMul2DCompiler {
             }
             let (mul, sum_reduce) = (s.get(&mul), s.get(&sum_reduce));
             // Insert MatMul2D op
-            let mut srcs = graph.get_sources(mul);
+            let mut srcs = graph.borrow().get_sources(mul);
             // Undo expansions and permute
             srcs[0].2.remove_dim(2);
             srcs[1].2.remove_dim(1);
@@ -134,13 +135,14 @@ impl Compiler for BatchMatMul2DCompiler {
                 .finish();
 
             // Create edges to dests
-            move_outgoing_edge(sum_reduce, new_op, graph);
-            remap(sum_reduce, new_op, &mut ids, graph);
-            remap(mul, new_op, &mut ids, graph);
+            let mut graph_mut = graph.borrow_mut();
+            move_outgoing_edge(sum_reduce, new_op, &mut graph_mut);
+            remap(sum_reduce, new_op, &mut ids, &mut graph_mut);
+            remap(mul, new_op, &mut ids, &mut graph_mut);
 
             // Remove the old ops
-            graph.graph.remove_node(mul);
-            graph.graph.remove_node(sum_reduce);
+            graph_mut.graph.remove_node(mul);
+            graph_mut.graph.remove_node(sum_reduce);
         }
     }
 }

@@ -27,7 +27,7 @@ pub struct StorageBufferCompiler;
 
 impl Compiler for StorageBufferCompiler {
     type Output = ();
-    fn compile<To: ToIdsMut>(&self, graph: &mut Graph, _: To) {
+    fn compile<To: ToIdsMut>(&self, graph: &GraphWrapper, _: To) {
         // First pass - get clear sets for each node
         #[allow(clippy::type_complexity)]
         let mut first_pass: FxHashMap<

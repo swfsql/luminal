@@ -18,7 +18,7 @@ pub struct Repeated<T, const N: usize> {
 }
 
 impl<T: InitModule, const N: usize> InitModule for Repeated<T, N> {
-    fn initialize(cx: &mut Graph) -> Self {
+    fn initialize(cx: &GraphWrapper) -> Self {
         Self {
             modules: (0..N).map(|_| InitModule::initialize(cx)).collect(),
         }

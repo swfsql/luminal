@@ -149,7 +149,7 @@ pub struct MetalSubtractionCompiler<T: MetalFloat>(PhantomData<T>);
 
 impl<T: MetalFloat> Compiler for MetalSubtractionCompiler<T> {
     type Output = ();
-    fn compile<To: ToIdsMut>(&self, graph: &mut Graph, mut ids: To) {
+    fn compile<To: ToIdsMut>(&self, graph: &GraphWrapper, mut ids: To) {
         let dev = Device::system_default().unwrap();
         let queue = dev.new_command_queue();
         let rhs = node();
@@ -331,7 +331,7 @@ pub struct MetalEqualCompiler<T: MetalFloat>(PhantomData<T>);
 
 impl<T: MetalFloat> Compiler for MetalEqualCompiler<T> {
     type Output = ();
-    fn compile<To: ToIdsMut>(&self, graph: &mut Graph, mut ids: To) {
+    fn compile<To: ToIdsMut>(&self, graph: &GraphWrapper, mut ids: To) {
         let dev = Device::system_default().unwrap();
         let queue = dev.new_command_queue();
         let one = constant::<T>(1.);
@@ -476,7 +476,7 @@ pub struct MetalGatherCompiler<T: MetalFloat>(PhantomData<T>);
 
 impl<T: MetalFloat> Compiler for MetalGatherCompiler<T> {
     type Output = ();
-    fn compile<To: ToIdsMut>(&self, graph: &mut Graph, mut ids: To) {
+    fn compile<To: ToIdsMut>(&self, graph: &GraphWrapper, mut ids: To) {
         let dev = Device::system_default().unwrap();
         let queue = dev.new_command_queue();
         let indexes = node();

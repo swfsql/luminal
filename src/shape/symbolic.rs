@@ -982,7 +982,15 @@ mod tests {
     fn test_group_terms() {
         let s = BigExpression::from('s');
         let expr = (s.clone() * ((s.clone() - 4) + 1))
-            + (((s.clone() + 1) * ((s.clone() - 4) + 1)) - (s.clone() * ((s.clone() - 4) + 1)));
+        + (((s.clone() + 1) * ((s.clone() - 4) + 1)) - (s.clone() * ((s.clone() - 4) + 1)));
         assert_eq!(expr.simplify(), ((s.clone() + -3) * (s.clone() + 1)));
     }
+    // TODO: miri fails
+    //
+    // MIRIFLAGS='-Zmiri-strict-provenance -Zmiri-symbolic-alignment-check -Zmiri-retag-fields -Zmiri-disable-isolation -Zmiri-tree-borrows' cargo miri nextest run --test-threads 8 test_group_terms
+    //
+    // thread 'shape::symbolic::tests::test_group_terms' panicked at src/shape/symbolic.rs:986:9:
+    // assertion `left == right` failed
+    // left: ((s*((s+-4)+1))+((((s+-4)+1)*(s+1))-(s*((s+-4)+1))))
+    // right: ((s+-3)*(s+1))
 }

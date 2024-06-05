@@ -256,7 +256,7 @@ impl<T> CudaQuantizedCompiler<T> {
 
 impl<T: CudaFloat + Default> Compiler for CudaQuantizedCompiler<T> {
     type Output = ();
-    fn compile<To: ToIdsMut>(&self, graph: &mut Graph, mut remap: To) {
+    fn compile<To: ToIdsMut>(&self, graph: &GraphWrapper, mut remap: To) {
         let device = CudaDevice::new(0).unwrap();
         let mut weight_ids = self.0.clone();
         let mut local_remap = remap.to_ids_mut();
@@ -267,16 +267,18 @@ impl<T: CudaFloat + Default> Compiler for CudaQuantizedCompiler<T> {
         graph.compile(crate::CudaCompiler::<T>::default(), &mut local_remap);
         // Modify ops directly downstream of weights
         for weight in downstream(&weight_ids, graph) {
-            for (target, (inp_ind, _, _)) in graph
+            let elems = graph
+                .borrow()
                 .edges_directed(weight, petgraph::Direction::Outgoing)
                 .filter_map(|e| e.weight().as_data().map(|i| (e.target(), i)))
-                .collect::<Vec<_>>()
-            {
+                .collect::<Vec<_>>();
+            for (target, (inp_ind, _, _)) in elems {
                 assert_eq!(
                     inp_ind, 1,
                     "Quantized weight {target:?} is the wrong input!",
                 );
-                let op_node = graph.node_weight_mut(target).unwrap();
+                let mut graph_mut = graph.borrow_mut();
+                let op_node = graph_mut.node_weight_mut(target).unwrap();
                 if let Some(gather) = op_node.as_any().downcast_ref::<CudaGather<T>>() {
                     *op_node =
                         Box::new(QuantizedGather::<T>::new(device.clone(), gather.embed_dim));

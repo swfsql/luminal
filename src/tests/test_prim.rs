@@ -267,8 +267,14 @@ fn test_sum_reduce() {
     let a = cx
         .tensor::<R3<2, 2, 3>>()
         .set([[[1., 2., 3.], [1., 2., 3.]], [[1., 2., 3.], [1., 2., 3.]]]);
-    let b = a.sum_reduce::<_, crate::prelude::Axis<1>>().retrieve();
-    let c = a.sum_reduce::<_, crate::prelude::Axis<0>>().retrieve();
+    let b = a
+        .clone()
+        .sum_reduce::<_, crate::prelude::Axis<1>>()
+        .retrieve();
+    let c = a
+        .clone()
+        .sum_reduce::<_, crate::prelude::Axis<0>>()
+        .retrieve();
     let d = a.sum_reduce::<_, crate::prelude::Axis<2>>().retrieve();
     cx.execute();
 
@@ -309,8 +315,14 @@ fn test_max_reduce() {
     let a = cx
         .tensor::<R3<2, 2, 3>>()
         .set([[[1., 2., 3.], [1., 2., 3.]], [[1., 2., 3.], [1., 2., 3.]]]);
-    let b = a.max_reduce::<_, crate::prelude::Axis<1>>().retrieve();
-    let c = a.max_reduce::<_, crate::prelude::Axis<0>>().retrieve();
+    let b = a
+        .clone()
+        .max_reduce::<_, crate::prelude::Axis<1>>()
+        .retrieve();
+    let c = a
+        .clone()
+        .max_reduce::<_, crate::prelude::Axis<0>>()
+        .retrieve();
     let d = a.max_reduce::<_, crate::prelude::Axis<2>>().retrieve();
     cx.execute();
 

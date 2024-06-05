@@ -1,3 +1,5 @@
+use std::rc::Rc;
+
 use luminal::prelude::*;
 
 /// [Stochastic Gradient Descent](https://en.wikipedia.org/wiki/Stochastic_gradient_descent)
@@ -11,17 +13,17 @@ pub fn sgd(
     Vec<NodeIndex>,
     Vec<NodeIndex>,
     Vec<NodeIndex>,
-    Graph,
+    GraphWrapper,
     GraphTensor<()>,
 ) {
-    let mut opt_graph = Graph::new();
+    let opt_graph = Graph::new();
     let (old_weights, gradients): (Vec<NodeIndex>, Vec<NodeIndex>) = grads
         .iter()
         .map(|_| (opt_graph.tensor::<()>().id, opt_graph.tensor::<()>().id))
         .unzip();
 
     let (new_weights, lr) = sgd_on_graph(
-        &mut opt_graph,
+        &opt_graph,
         &old_weights,
         &gradients
             .iter()
@@ -38,18 +40,19 @@ pub fn sgd(
 ///
 /// Output: (New weight outputs, Learning Rate Tensor)
 pub fn sgd_on_graph(
-    graph: &mut Graph,
+    graph: &GraphWrapper,
     old_weights: impl ToIds,
     grads: &[(NodeIndex, ShapeTracker)],
 ) -> (Vec<NodeIndex>, GraphTensor<()>) {
     let lr = graph.named_tensor("Learning Rate").set(3e-4).keep(); // Karpathy constant
     let mut new_weights = vec![];
     for ((grad_id, grad_shape), old_weight_id) in grads.iter().copied().zip(old_weights.to_ids()) {
-        let old_weight = GraphTensor::<()>::from_id(old_weight_id, grad_shape, graph);
-        let gradient = GraphTensor::<()>::from_id(grad_id, grad_shape, graph);
+        let old_weight =
+            GraphTensor::<()>::from_id(old_weight_id, grad_shape, Rc::downgrade(&graph.0));
+        let gradient = GraphTensor::<()>::from_id(grad_id, grad_shape, Rc::downgrade(&graph.0));
 
         // SGD
-        let new_weight = old_weight - (gradient * lr.expand_to(grad_shape));
+        let new_weight = old_weight - (gradient * lr.clone().expand_to(grad_shape));
         new_weight.keep();
 
         new_weights.push(new_weight.id);

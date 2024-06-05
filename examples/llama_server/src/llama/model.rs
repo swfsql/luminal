@@ -35,14 +35,14 @@ where
     type Output = GraphTensor<Sh>;
 
     fn forward(&self, input: GraphTensor<Sh>) -> Self::Output {
-        let gate = self.gate_proj.forward(input).swish();
+        let gate = self.gate_proj.forward(input.clone()).swish();
         let up = self.up_proj.forward(input) * gate;
         self.down_proj.forward(up)
     }
 }
 
 impl<const I: usize, const H: usize> InitModule for Mlp<I, H> {
-    fn initialize(cx: &mut Graph) -> Self {
+    fn initialize(cx: &GraphWrapper) -> Self {
         Self {
             gate_proj: PermutedLinear {
                 weight: cx.named_tensor("Gate"),
@@ -70,21 +70,22 @@ fn apply_rotary_embeddings_ggml<const N_HEADS: usize, Batch: Dimension, Seq: Dim
     prev_seq: BigExpression,
 ) -> GraphTensor<(Batch, Const<N_HEADS>, Seq, Const<HEAD_DIM>)> {
     // Get freqs
-    let freqs = (input.graph().arange::<Const<HEAD_DIM_OVER_2>>() * 2.0) / (HEAD_DIM as f32);
+    let freqs =
+        (input.graph().unwrap().arange::<Const<HEAD_DIM_OVER_2>>() * 2.0) / (HEAD_DIM as f32);
     let freqs = 500000_f32.pow(freqs);
-    let pos = input.graph().arange::<Seq>() + prev_seq;
+    let pos = input.graph().unwrap().arange::<Seq>() + prev_seq;
     let emb = pos.expand::<(_, Const<1>), _>().matmul(freqs.expand());
 
     // Split input into evens and odds
     let split = input.reshape::<(Batch, Const<N_HEADS>, Seq, Const<HEAD_DIM_OVER_2>, Const<2>)>();
     let x0: GraphTensor<(Batch, Const<N_HEADS>, Seq, Const<HEAD_DIM_OVER_2>, Const<1>)> =
-        split.slice((.., .., .., .., ..1)).realize();
+        split.clone().slice((.., .., .., .., ..1)).realize();
     let x1: GraphTensor<(Batch, Const<N_HEADS>, Seq, Const<HEAD_DIM_OVER_2>, Const<1>)> =
         split.slice((.., .., .., .., 1..)).realize();
 
     // Apply sin and cos embeddings
-    let x0_out = x0 * emb.cos().expand() - x1 * emb.sin().expand();
-    let x1_out = x0 * emb.sin().expand() + x1 * emb.cos().expand();
+    let x0_out = x0.clone() * emb.clone().cos().expand() - x1.clone() * emb.clone().sin().expand();
+    let x1_out = x0 * emb.clone().sin().expand() + x1 * emb.cos().expand();
 
     // Combine back into output
     x0_out
@@ -122,17 +123,19 @@ impl<Batch: Dimension, CurSeq: Dimension, PrevSeq: Dimension, TotSeq: Dimension>
     ) -> Self::Output {
         // Apply the Projections
         let queries = x
-            .matmul(self.q_proj.permute())
+            .clone()
+            .matmul(self.q_proj.clone().permute())
             .reshape::<(Batch, CurSeq, Const<N_HEADS>, Const<HEAD_DIM>)>()
             .permute::<_, Axes4<0, 2, 1, 3>>();
 
         let keys = x
-            .matmul(self.k_proj.permute())
+            .clone()
+            .matmul(self.k_proj.clone().permute())
             .reshape::<(Batch, CurSeq, Const<N_KV_HEADS>, Const<HEAD_DIM>)>()
             .permute::<_, Axes4<0, 2, 1, 3>>();
 
         let values = x
-            .matmul(self.v_proj.permute())
+            .matmul(self.v_proj.clone().permute())
             .reshape::<(Batch, CurSeq, Const<N_KV_HEADS>, Const<HEAD_DIM>)>()
             .permute::<_, Axes4<0, 2, 1, 3>>();
 
@@ -145,8 +148,12 @@ impl<Batch: Dimension, CurSeq: Dimension, PrevSeq: Dimension, TotSeq: Dimension>
         let values = v_cache.concat_along::<_, Axis<2>, _>(values);
 
         // Repeat the KV States for Grouped-Query Attention
-        let repeated_keys = keys.expand::<(_, _, Const<N_ATTENTION_GROUPS>, _, _), _>();
-        let repeated_values = values.expand::<(_, _, Const<N_ATTENTION_GROUPS>, _, _), _>();
+        let repeated_keys = keys
+            .clone()
+            .expand::<(_, _, Const<N_ATTENTION_GROUPS>, _, _), _>();
+        let repeated_values = values
+            .clone()
+            .expand::<(_, _, Const<N_ATTENTION_GROUPS>, _, _), _>();
 
         // Calculate attention weights
         let mut attention_weights = queries
@@ -154,7 +161,7 @@ impl<Batch: Dimension, CurSeq: Dimension, PrevSeq: Dimension, TotSeq: Dimension>
             .matmul(repeated_keys.permute())
             .div((HEAD_DIM as f32).sqrt());
 
-        let attention_mask = self.k_proj.graph().triu::<CurSeq>(1) * f16::MIN.to_f32();
+        let attention_mask = self.k_proj.graph().unwrap().triu::<CurSeq>(1) * f16::MIN.to_f32();
         attention_weights += attention_mask
             .pad::<(CurSeq, TotSeq)>(((0, 0), (TotSeq::size() - CurSeq::size(), 0)))
             .expand();
@@ -169,13 +176,13 @@ impl<Batch: Dimension, CurSeq: Dimension, PrevSeq: Dimension, TotSeq: Dimension>
             .reshape::<(Batch, CurSeq, Const<HIDDEN_DIM>)>();
         let output = output
             // Apply output projection
-            .matmul(self.o_proj.permute());
+            .matmul(self.o_proj.clone().permute());
         (output, (keys.contiguous(), values.contiguous())) // Cache needs to be contiguous for transferring to another graph
     }
 }
 
 impl InitModule for SelfAttention {
-    fn initialize(cx: &mut Graph) -> Self {
+    fn initialize(cx: &GraphWrapper) -> Self {
         Self {
             q_proj: cx.named_tensor("Q Proj"),
             k_proj: cx.named_tensor("K Proj"),
@@ -187,10 +194,10 @@ impl InitModule for SelfAttention {
 
 impl SerializeModule for SelfAttention {
     fn serialize(&self, s: &mut Serializer) {
-        s.tensor("attn_q/weight", self.q_proj);
-        s.tensor("attn_v/weight", self.v_proj);
-        s.tensor("attn_k/weight", self.k_proj);
-        s.tensor("attn_output/weight", self.o_proj);
+        s.tensor("attn_q/weight", self.q_proj.clone());
+        s.tensor("attn_v/weight", self.v_proj.clone());
+        s.tensor("attn_k/weight", self.k_proj.clone());
+        s.tensor("attn_output/weight", self.o_proj.clone());
     }
 }
 
@@ -221,7 +228,7 @@ impl<Batch: Dimension, CurSeq: Dimension, PrevSeq: Dimension, TotSeq: Dimension>
         ),
     ) -> Self::Output {
         // Attention
-        let normed = self.attention_norm.forward(x);
+        let normed = self.attention_norm.forward(x.clone());
         let (y, cache) = self
             .attention
             .forward((normed, cache, PhantomData::<TotSeq>));
@@ -230,7 +237,9 @@ impl<Batch: Dimension, CurSeq: Dimension, PrevSeq: Dimension, TotSeq: Dimension>
         x += y;
 
         // Feed Forward
-        let y = self.feed_forward.forward(self.feed_forward_norm.forward(x));
+        let y = self
+            .feed_forward
+            .forward(self.feed_forward_norm.forward(x.clone()));
 
         // Residual Addition
         (x + y, cache)
@@ -238,7 +247,7 @@ impl<Batch: Dimension, CurSeq: Dimension, PrevSeq: Dimension, TotSeq: Dimension>
 }
 
 impl InitModule for TransformerBlock {
-    fn initialize(cx: &mut Graph) -> Self {
+    fn initialize(cx: &GraphWrapper) -> Self {
         Self {
             attention: InitModule::initialize(cx),
             attention_norm: LayerNorm::new(true, false, false, 1e-5, cx),
@@ -294,18 +303,18 @@ impl<Batch: Dimension, CurSeq: Dimension, PrevSeq: Dimension, TotSeq: Dimension>
         let mut new_caches = vec![];
         let mut new_cache;
         for (i, layer) in self.layers.iter().enumerate() {
-            (x, new_cache) = layer.forward((x, cache[i], PhantomData::<TotSeq>));
+            (x, new_cache) = layer.forward((x, cache[i].clone(), PhantomData::<TotSeq>));
             new_caches.push(new_cache);
         }
         // Run through last norm and output projection
-        let output = self.norm.forward(x).matmul(self.lm_head.permute());
+        let output = self.norm.forward(x).matmul(self.lm_head.clone().permute());
 
         (output, new_caches)
     }
 }
 
 impl InitModule for MistralLM {
-    fn initialize(cx: &mut Graph) -> Self {
+    fn initialize(cx: &GraphWrapper) -> Self {
         Self {
             embedding: Embedding {
                 weight: cx.named_tensor("Embedding Weight"),
@@ -323,7 +332,7 @@ impl SerializeModule for MistralLM {
     fn serialize(&self, s: &mut Serializer) {
         s.module("token_embd", &self.embedding);
         s.module("output_norm", &self.norm);
-        s.tensor("output/weight", self.lm_head);
+        s.tensor("output/weight", self.lm_head.clone());
         for (i, layer) in self.layers.iter().enumerate() {
             s.module(&format!("blk/{i}"), layer);
         }

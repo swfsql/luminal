@@ -88,6 +88,7 @@ impl<S: Shape> GraphTensor<S> {
         }
         let new_id = self
             .graph()
+            .unwrap()
             .add_op(op::Contiguous)
             .input(self.id, 0, self.shape)
             .finish();
@@ -215,6 +216,7 @@ impl<S: Shape> GraphTensor<S> {
 }
 
 #[cfg(test)]
+#[allow(deprecated)]
 mod tests {
     use dfdx::{
         shapes::Rank2,
@@ -226,13 +228,12 @@ mod tests {
 
     #[test]
     fn test_concat_1d() {
-        let mut cx = Graph::new();
+        let cx = Graph::new();
         let a = cx.tensor::<R1<4>>();
-        a.set(vec![1.4325, 2.492428, 3.127365, 3.54865]);
+        let a = a.set(vec![1.4325, 2.492428, 3.127365, 3.54865]);
         let b = cx.tensor::<R1<3>>();
-        b.set(vec![2.30434, 2.2343113, 1.4393]);
-        let c = a.concat_along::<R1<7>, LAxis<0>, _>(b);
-        c.retrieve();
+        let b = b.set(vec![2.30434, 2.2343113, 1.4393]);
+        let c = a.concat_along::<R1<7>, LAxis<0>, _>(b).retrieve();
         cx.execute();
 
         let d_dev = Cpu::default();
@@ -245,11 +246,14 @@ mod tests {
 
     #[test]
     fn test_concat_self() {
-        let mut cx = Graph::new();
+        let cx = Graph::new();
         let a = cx
             .tensor::<(LConst<4>,)>()
             .set(vec![1.4325, 2.492428, 3.127365, 3.54865]);
-        let b = a.concat_along::<(LConst<8>,), LAxis<0>, _>(a).retrieve();
+        let b = a
+            .clone()
+            .concat_along::<(LConst<8>,), LAxis<0>, _>(a)
+            .retrieve();
         cx.execute();
 
         let d_dev = Cpu::default();
@@ -262,15 +266,19 @@ mod tests {
 
     #[test]
     fn test_concat_2d() {
-        let mut cx = Graph::new();
+        let cx = Graph::new();
         let a = cx.tensor::<R2<3, 2>>();
-        a.set(vec![1.4325, 2.492428, 3.127365, 33.2834, 4.18734, 23.854]);
+        let a = a.set(vec![1.4325, 2.492428, 3.127365, 33.2834, 4.18734, 23.854]);
         let b = cx.tensor::<R2<3, 2>>();
-        b.set(vec![2.30434, 2.2343113, 1.4393, 482.4312, 8.1234, 54.2054]);
-        let c = a.concat_along::<R2<3, 4>, LAxis<1>, _>(b);
-        let d = a.concat_along::<R2<6, 2>, LAxis<0>, _>(b);
-        c.retrieve();
-        d.retrieve();
+        let b = b.set(vec![2.30434, 2.2343113, 1.4393, 482.4312, 8.1234, 54.2054]);
+        let c = a
+            .clone()
+            .concat_along::<R2<3, 4>, LAxis<1>, _>(b.clone())
+            .retrieve();
+        let d = a
+            .clone()
+            .concat_along::<R2<6, 2>, LAxis<0>, _>(b)
+            .retrieve();
         cx.execute();
 
         let d_dev = Cpu::default();
@@ -299,11 +307,11 @@ mod tests {
 
     #[test]
     fn test_pad_2d() {
-        let mut cx = Graph::new();
+        let cx = Graph::new();
         let a = cx
             .tensor::<R2<3, 2>>()
             .set(vec![1.4325, 2.492428, 3.127365, 33.2834, 4.18734, 23.854]);
-        let b = a.pad::<R2<3, 4>>(((0, 0), (0, 2))).retrieve();
+        let b = a.clone().pad::<R2<3, 4>>(((0, 0), (0, 2))).retrieve();
         cx.execute();
 
         let d_dev = Cpu::default();
@@ -327,11 +335,14 @@ mod tests {
 
     #[test]
     fn test_slice_2d() {
-        let mut cx = Graph::new();
+        let cx = Graph::new();
         let a = cx.tensor::<R2<3, 2>>();
-        a.set(vec![1.4325, 2.492428, 3.127365, 33.2834, 4.18734, 23.854]);
-        let b = a.slice((.., ..Expression::from(1))).realize::<R2<3, 1>>();
-        b.retrieve();
+        let a = a.set(vec![1.4325, 2.492428, 3.127365, 33.2834, 4.18734, 23.854]);
+        let b = a
+            .clone()
+            .slice((.., ..Expression::from(1)))
+            .realize::<R2<3, 1>>()
+            .retrieve();
         cx.execute();
 
         let d_dev = Cpu::default();
@@ -346,9 +357,9 @@ mod tests {
 
     #[test]
     fn test_cumsum() {
-        let mut cx = Graph::new();
+        let cx = Graph::new();
         let a = cx.constant(1.).expand::<R1<3>, _>();
-        let b = a.cumsum_last_dim().retrieve();
+        let b = a.clone().cumsum_last_dim().retrieve();
         let c = a
             .expand::<R2<3, 3>, LAxis<1>>()
             .permute::<_, LAxes2<1, 0>>()
@@ -363,33 +374,44 @@ mod tests {
 
     #[test]
     fn test_pool_1d() {
-        let mut cx = Graph::new();
+        let cx = Graph::new();
 
         let inp1 = cx.tensor::<R1<5>>().set([1., 2., 3., 4., 5.]);
         let inp2 = cx
             .tensor::<R2<2, 5>>()
             .set([[15., 14., 13., 12., 11.], [1., 2., 3., 4., 5.]]);
         // Stride 1
-        let out1 = inp1.pool_last_dim::<R2<3, 3>>(3, 1, 0).retrieve();
+        let out1 = inp1.clone().pool_last_dim::<R2<3, 3>>(3, 1, 0).retrieve();
         // Stride 2
-        let out2 = inp1.pool_last_dim::<R2<2, 3>>(3, 2, 0).retrieve();
+        let out2 = inp1.clone().pool_last_dim::<R2<2, 3>>(3, 2, 0).retrieve();
         // Stride 3
-        let out3 = inp1.pool_last_dim::<R2<1, 3>>(3, 3, 0).retrieve();
+        let out3 = inp1.clone().pool_last_dim::<R2<1, 3>>(3, 3, 0).retrieve();
         // Dilation 1
-        let out4 = inp1.pool_last_dim::<R2<1, 3>>(3, 1, 1).retrieve();
+        let out4 = inp1.clone().pool_last_dim::<R2<1, 3>>(3, 1, 1).retrieve();
         // Dilation 1 Padding 1
         let out5 = inp1
+            .clone()
             .pad::<R1<7>>(((1, 1),))
             .pool_last_dim::<R2<3, 3>>(3, 1, 1)
             .retrieve();
         // Stride 1 Batch 2
-        let out6 = inp2.pool_last_dim::<R3<2, 3, 3>>(3, 1, 0).retrieve();
+        let out6 = inp2
+            .clone()
+            .pool_last_dim::<R3<2, 3, 3>>(3, 1, 0)
+            .retrieve();
         // Stride 3
-        let out7 = inp2.pool_last_dim::<R3<2, 1, 3>>(3, 3, 0).retrieve();
+        let out7 = inp2
+            .clone()
+            .pool_last_dim::<R3<2, 1, 3>>(3, 3, 0)
+            .retrieve();
         // Dilation 1
-        let out8 = inp2.pool_last_dim::<R3<2, 1, 3>>(3, 1, 1).retrieve();
+        let out8 = inp2
+            .clone()
+            .pool_last_dim::<R3<2, 1, 3>>(3, 1, 1)
+            .retrieve();
         // Dilation 1 Padding 1
         let out9 = inp2
+            .clone()
             .pad::<R2<2, 7>>(((0, 0), (1, 1)))
             .pool_last_dim::<R3<2, 3, 3>>(3, 1, 1)
             .retrieve();
@@ -419,7 +441,7 @@ mod tests {
 
     #[test]
     fn test_pool_1d_dims() {
-        let mut cx = Graph::new();
+        let cx = Graph::new();
 
         let inp1 = cx.tensor::<R2<4, 4>>().set(vec![
             1., 2., 3., 4., 5., 6., 7., 8., 9., 10., 11., 12., 13., 14., 15., 16.,
@@ -440,7 +462,7 @@ mod tests {
 
     #[test]
     fn test_pool_2d() {
-        let mut cx = Graph::new();
+        let cx = Graph::new();
 
         let inp1 = cx.tensor::<R2<4, 4>>().set(vec![
             1., 2., 3., 4., 5., 6., 7., 8., 9., 10., 11., 12., 13., 14., 15., 16.,
@@ -473,13 +495,13 @@ mod tests {
 
     #[test]
     fn test_pool_1d_dilation() {
-        let mut cx = Graph::new();
+        let cx = Graph::new();
 
         let inp1 = cx.tensor::<R1<5>>().set(vec![1., 2., 3., 4., 5.]);
         // Stride 1
-        let out1 = inp1.pool_last_dim::<R2<3, 2>>(2, 1, 1).retrieve();
+        let out1 = inp1.clone().pool_last_dim::<R2<3, 2>>(2, 1, 1).retrieve();
         // Stride 2
-        let out2 = inp1.pool_last_dim::<R2<2, 2>>(2, 2, 1).retrieve();
+        let out2 = inp1.clone().pool_last_dim::<R2<2, 2>>(2, 2, 1).retrieve();
         // Stride 3
         let out3 = inp1.pool_last_dim::<R2<1, 2>>(2, 3, 1).retrieve();
 
@@ -492,13 +514,12 @@ mod tests {
 
     #[test]
     fn test_rotate_half() {
-        let mut cx = Graph::new();
+        let cx = Graph::new();
         let a = cx.tensor::<R2<3, 2>>();
-        a.set(vec![1.4325, 2.492428, 3.127365, 33.2834, 4.18734, 23.854]);
-        let x1 = a.slice((.., ..Expression::from(1))).contiguous();
+        let a = a.set(vec![1.4325, 2.492428, 3.127365, 33.2834, 4.18734, 23.854]);
+        let x1 = a.clone().slice((.., ..Expression::from(1))).contiguous();
         let x2 = a.slice((.., Expression::from(1)..)).contiguous();
-        let c = (-x2).concat_along::<R2<3, 2>, LAxis<1>, _>(x1);
-        c.retrieve();
+        let c = (-x2).concat_along::<R2<3, 2>, LAxis<1>, _>(x1).retrieve();
         cx.execute();
 
         let d_dev = Cpu::default();

@@ -28,7 +28,7 @@ impl<
         const DEC_LAYERS: usize,
     > InitModule for Transformer<DIM, FF, ENC_HEADS, DEC_HEADS, ENC_LAYERS, DEC_LAYERS>
 {
-    fn initialize(cx: &mut Graph) -> Self {
+    fn initialize(cx: &GraphWrapper) -> Self {
         Self {
             encoder: InitModule::initialize(cx),
             decoder: InitModule::initialize(cx),
@@ -91,92 +91,108 @@ mod tests {
     use super::Transformer;
     #[test]
     fn test_transformer_full() {
-        let mut cx = Graph::new();
-        let model: Transformer<3, 4, 1, 1, 1, 1> = InitModule::initialize(&mut cx);
+        let cx = Graph::new();
+        let model: Transformer<3, 4, 1, 1, 1, 1> = InitModule::initialize(&cx);
         model.decoder.layers[0]
             .self_attention
             .w_k
             .weight
+            .clone()
             .set(vec![1., 22., 3., 1., 2., 3., 1., 2., 3.]);
         model.decoder.layers[0]
             .self_attention
             .w_q
             .weight
+            .clone()
             .set(vec![3., 2., 3., 1.3, 2., 3., 3., 2., 3.]);
         model.decoder.layers[0]
             .self_attention
             .w_v
             .weight
+            .clone()
             .set(vec![-1., 12., 3., -1., 2., -3., 11., 2., 3.]);
         model.decoder.layers[0]
             .self_attention
             .w_o
             .weight
+            .clone()
             .set(vec![1., 22., 3., 1., 2., 3., 1., 2., 3.]);
         model.decoder.layers[0]
             .cross_attention
             .w_k
             .weight
+            .clone()
             .set(vec![1., 22., 3., 1., 2., 3., 1., 2., 3.]);
         model.decoder.layers[0]
             .cross_attention
             .w_q
             .weight
+            .clone()
             .set(vec![3., 2., 3., 1.3, 2., 3., 3., 2., 3.]);
         model.decoder.layers[0]
             .cross_attention
             .w_v
             .weight
+            .clone()
             .set(vec![-1., 12., 3., -1., 2., -3., 11., 2., 3.]);
         model.decoder.layers[0]
             .cross_attention
             .w_o
             .weight
+            .clone()
             .set(vec![1., 22., 3., 1., 2., 3., 1., 2., 3.]);
         model.decoder.layers[0]
             .ff
             .0
             .weight
+            .clone()
             .set(vec![-1., 12., 3., -1., 2., -3., 11., 2., 3., 11., 2., 3.]);
         model.decoder.layers[0]
             .ff
             .2
             .weight
+            .clone()
             .set(vec![-1., 12., 3., -1., 2., -3., 11., 2., 3., 3., -1., 2.]);
         model.encoder.modules[0]
             .attention
             .w_k
             .weight
+            .clone()
             .set(vec![1., 22., 3., 1., 2., 3., 1., 2., 3.]);
         model.encoder.modules[0]
             .attention
             .w_q
             .weight
+            .clone()
             .set(vec![3., 2., 3., 1.3, 2., 3., 3., 2., 3.]);
         model.encoder.modules[0]
             .attention
             .w_v
             .weight
+            .clone()
             .set(vec![-1., 12., 3., -1., 2., -3., 11., 2., 3.]);
         model.encoder.modules[0]
             .attention
             .w_o
             .weight
+            .clone()
             .set(vec![1., 22., 3., 1., 2., 3., 1., 2., 3.]);
         model.encoder.modules[0]
             .ff
             .0
             .weight
+            .clone()
             .set(vec![-1., 12., 3., -1., 2., -3., 11., 2., 3., 11., 2., 3.]);
         model.encoder.modules[0]
             .ff
             .2
             .weight
+            .clone()
             .set(vec![-1., 12., 3., -1., 2., -3., 11., 2., 3., 3., -1., 2.]);
 
         let a = cx.tensor::<(Dyn<'d'>, luminal::shape::Const<3>)>();
         let e = cx.tensor::<(Dyn<'e'>, luminal::shape::Const<3>)>();
-        let b = model.forward((a, e));
+        let b = model.forward((a.clone(), e.clone()));
 
         a.set_dyn(vec![-1., 2., 3., 3., 3., -1.], &[2, 3]);
         e.set_dyn(vec![-1., 2., 3., 3., 3., -1., -1., 2., 3.], &[3, 3]);

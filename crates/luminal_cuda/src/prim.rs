@@ -6,7 +6,9 @@ use rustc_hash::FxHashMap;
 
 use std::{
     any::{Any, TypeId},
+    cell::RefCell,
     marker::PhantomData,
+    rc::Rc,
     sync::Arc,
 };
 
@@ -76,7 +78,7 @@ impl<T: CudaFloat> Operator for CudaCopyFromDevice<T> {
 pub struct CudaConstant<T> {
     pub value: ConstantValue,
     device: Arc<CudaDevice>,
-    dyn_map: *const FxHashMap<char, usize>,
+    dyn_map: Rc<RefCell<FxHashMap<char, usize>>>,
     _phantom: PhantomData<T>,
 }
 impl<T> core::fmt::Debug for CudaConstant<T> {
@@ -89,7 +91,7 @@ impl<T> CudaConstant<T> {
     pub fn new(
         device: Arc<CudaDevice>,
         value: ConstantValue,
-        dyn_map: *const FxHashMap<char, usize>,
+        dyn_map: Rc<RefCell<FxHashMap<char, usize>>>,
     ) -> Self {
         Self {
             value,
@@ -105,7 +107,7 @@ impl<T: CudaFloat> Operator for CudaConstant<T> {
         let mut a = unsafe { self.device.alloc::<T>(1).unwrap() };
         let value = match &self.value {
             ConstantValue::Expression(e) => {
-                T::from_f32(e.exec(unsafe { self.dyn_map.as_ref().unwrap() }).unwrap() as f32)
+                T::from_f32(e.exec(&self.dyn_map.borrow()).unwrap() as f32)
             }
             ConstantValue::Float(f) => T::from_f32(*f),
         };
@@ -131,7 +133,7 @@ macro_rules! cuda_unary_op {
             function: CudaFunction,
             device: Arc<CudaDevice>,
             dyn_symbols: Vec<char>,
-            dyn_map: *const FxHashMap<char, usize>,
+            dyn_map: Rc<RefCell<FxHashMap<char, usize>>>,
             _phantom: PhantomData<T>,
         }
 
@@ -139,7 +141,7 @@ macro_rules! cuda_unary_op {
             pub fn new(
                 shape: ShapeTracker,
                 device: Arc<CudaDevice>,
-                dyn_map: *const FxHashMap<char, usize>,
+                dyn_map: Rc<RefCell<FxHashMap<char, usize>>>,
             ) -> Self {
                 let (idx_exp, valid_exp) = get_idx_valid_exps(shape);
                 let (dyn_symbols, rendered) = render_dyn_dim_inputs(&[shape]);
@@ -174,7 +176,7 @@ macro_rules! cuda_unary_op {
                     inp.as_kernel_param(),
                     inp_size.as_kernel_param(),
                 ];
-                input_dyn_dims(&mut params, &self.dyn_symbols, self.dyn_map);
+                input_dyn_dims(&mut params, &self.dyn_symbols, &self.dyn_map.as_ref().borrow());
                 unsafe {
                     self.function
                         .clone()
@@ -211,7 +213,7 @@ pub struct CudaAdd<T> {
     device: Arc<CudaDevice>,
     _phantom: PhantomData<T>,
     dyn_symbols: Vec<char>,
-    dyn_map: *const FxHashMap<char, usize>,
+    dyn_map: Rc<RefCell<FxHashMap<char, usize>>>,
 }
 crate::debug_type!(CudaAdd);
 
@@ -220,7 +222,7 @@ impl<T: CudaFloat> CudaAdd<T> {
         a_shape: ShapeTracker,
         b_shape: ShapeTracker,
         device: Arc<CudaDevice>,
-        dyn_map: *const FxHashMap<char, usize>,
+        dyn_map: Rc<RefCell<FxHashMap<char, usize>>>,
     ) -> Self {
         let (a_idx, a_valid) = get_idx_valid_exps(a_shape);
         let (b_idx, b_valid) = get_idx_valid_exps(b_shape);
@@ -259,7 +261,11 @@ impl<T: CudaFloat> Operator for CudaAdd<T> {
             b.as_kernel_param(),
             inp_size.as_kernel_param(),
         ];
-        input_dyn_dims(&mut params, &self.dyn_symbols, self.dyn_map);
+        input_dyn_dims(
+            &mut params,
+            &self.dyn_symbols,
+            &self.dyn_map.as_ref().borrow(),
+        );
 
         unsafe {
             self.function
@@ -285,7 +291,7 @@ pub struct CudaMul<T> {
     device: Arc<CudaDevice>,
     _phantom: PhantomData<T>,
     dyn_symbols: Vec<char>,
-    dyn_map: *const FxHashMap<char, usize>,
+    dyn_map: Rc<RefCell<FxHashMap<char, usize>>>,
 }
 crate::debug_type!(CudaMul);
 
@@ -294,7 +300,7 @@ impl<T: CudaFloat> CudaMul<T> {
         a_shape: ShapeTracker,
         b_shape: ShapeTracker,
         device: Arc<CudaDevice>,
-        dyn_map: *const FxHashMap<char, usize>,
+        dyn_map: Rc<RefCell<FxHashMap<char, usize>>>,
     ) -> Self {
         let (a_idx, a_valid) = get_idx_valid_exps(a_shape);
         let (b_idx, b_valid) = get_idx_valid_exps(b_shape);
@@ -330,7 +336,11 @@ impl<T: CudaFloat> Operator for CudaMul<T> {
             b.as_kernel_param(),
             inp_size.as_kernel_param(),
         ];
-        input_dyn_dims(&mut params, &self.dyn_symbols, self.dyn_map);
+        input_dyn_dims(
+            &mut params,
+            &self.dyn_symbols,
+            &self.dyn_map.as_ref().borrow(),
+        );
 
         unsafe {
             self.function
@@ -356,7 +366,7 @@ pub struct CudaMod<T> {
     device: Arc<CudaDevice>,
     _phantom: PhantomData<T>,
     dyn_symbols: Vec<char>,
-    dyn_map: *const FxHashMap<char, usize>,
+    dyn_map: Rc<RefCell<FxHashMap<char, usize>>>,
 }
 crate::debug_type!(CudaMod);
 
@@ -365,7 +375,7 @@ impl<T: CudaFloat> CudaMod<T> {
         a_shape: ShapeTracker,
         b_shape: ShapeTracker,
         device: Arc<CudaDevice>,
-        dyn_map: *const FxHashMap<char, usize>,
+        dyn_map: Rc<RefCell<FxHashMap<char, usize>>>,
     ) -> Self {
         let (a_idx, a_valid) = get_idx_valid_exps(a_shape);
         let (b_idx, b_valid) = get_idx_valid_exps(b_shape);
@@ -401,7 +411,11 @@ impl<T: CudaFloat> Operator for CudaMod<T> {
             b.as_kernel_param(),
             inp_size.as_kernel_param(),
         ];
-        input_dyn_dims(&mut params, &self.dyn_symbols, self.dyn_map);
+        input_dyn_dims(
+            &mut params,
+            &self.dyn_symbols,
+            &self.dyn_map.as_ref().borrow(),
+        );
 
         unsafe {
             self.function
@@ -427,7 +441,7 @@ pub struct CudaLessThan<T> {
     device: Arc<CudaDevice>,
     _phantom: PhantomData<T>,
     dyn_symbols: Vec<char>,
-    dyn_map: *const FxHashMap<char, usize>,
+    dyn_map: Rc<RefCell<FxHashMap<char, usize>>>,
 }
 crate::debug_type!(CudaLessThan);
 
@@ -436,7 +450,7 @@ impl<T: CudaFloat> CudaLessThan<T> {
         a_shape: ShapeTracker,
         b_shape: ShapeTracker,
         device: Arc<CudaDevice>,
-        dyn_map: *const FxHashMap<char, usize>,
+        dyn_map: Rc<RefCell<FxHashMap<char, usize>>>,
     ) -> Self {
         let (a_idx, a_valid) = get_idx_valid_exps(a_shape);
         let (b_idx, b_valid) = get_idx_valid_exps(b_shape);
@@ -478,7 +492,11 @@ impl<T: CudaFloat> Operator for CudaLessThan<T> {
             b.as_kernel_param(),
             inp_size.as_kernel_param(),
         ];
-        input_dyn_dims(&mut params, &self.dyn_symbols, self.dyn_map);
+        input_dyn_dims(
+            &mut params,
+            &self.dyn_symbols,
+            &self.dyn_map.as_ref().borrow(),
+        );
 
         unsafe {
             self.function
@@ -505,7 +523,7 @@ pub struct CudaSumReduce<T> {
     pub dim: usize,
     _phantom: PhantomData<T>,
     dyn_symbols: Vec<char>,
-    dyn_map: *const FxHashMap<char, usize>,
+    dyn_map: Rc<RefCell<FxHashMap<char, usize>>>,
 }
 crate::debug_type!(CudaSumReduce);
 
@@ -514,7 +532,7 @@ impl<T: CudaFloat> CudaSumReduce<T> {
         dim: usize,
         shape: ShapeTracker,
         device: Arc<CudaDevice>,
-        dyn_map: *const FxHashMap<char, usize>,
+        dyn_map: Rc<RefCell<FxHashMap<char, usize>>>,
     ) -> Self {
         let (idx, valid) = get_idx_valid_exps(shape);
         let (dyn_symbols, rendered) = render_dyn_dim_inputs(&[shape]);
@@ -581,7 +599,11 @@ where
             dim_size.as_kernel_param(),
             inp_size.as_kernel_param(),
         ];
-        input_dyn_dims(&mut params, &self.dyn_symbols, self.dyn_map);
+        input_dyn_dims(
+            &mut params,
+            &self.dyn_symbols,
+            &self.dyn_map.as_ref().borrow(),
+        );
         unsafe {
             self.function
                 .clone()
@@ -599,7 +621,7 @@ pub struct CudaMaxReduce<T> {
     pub dim: usize,
     _phantom: PhantomData<T>,
     dyn_symbols: Vec<char>,
-    dyn_map: *const FxHashMap<char, usize>,
+    dyn_map: Rc<RefCell<FxHashMap<char, usize>>>,
 }
 crate::debug_type!(CudaMaxReduce);
 
@@ -608,7 +630,7 @@ impl<T: CudaFloat> CudaMaxReduce<T> {
         dim: usize,
         shape: ShapeTracker,
         device: Arc<CudaDevice>,
-        dyn_map: *const FxHashMap<char, usize>,
+        dyn_map: Rc<RefCell<FxHashMap<char, usize>>>,
     ) -> Self {
         let (idx, valid) = get_idx_valid_exps(shape);
         let (dyn_symbols, rendered) = render_dyn_dim_inputs(&[shape]);
@@ -671,7 +693,11 @@ impl<T: CudaFloat> Operator for CudaMaxReduce<T> {
             dim_size.as_kernel_param(),
             inp_size.as_kernel_param(),
         ];
-        input_dyn_dims(&mut params, &self.dyn_symbols, self.dyn_map);
+        input_dyn_dims(
+            &mut params,
+            &self.dyn_symbols,
+            &self.dyn_map.as_ref().borrow(),
+        );
         unsafe {
             self.function
                 .clone()
@@ -688,67 +714,87 @@ pub struct PrimitiveCompiler<T>(PhantomData<T>);
 
 impl<T: CudaFloat> Compiler for PrimitiveCompiler<T> {
     type Output = ();
-    fn compile<To: ToIdsMut>(&self, graph: &mut Graph, mut ids: To) {
+    fn compile<To: ToIdsMut>(&self, graph: &GraphWrapper, mut ids: To) {
         let dev = CudaDevice::new(0).unwrap();
         // Go through the graph and insert copy ops
         // Copy function output to device and input from device
-        for function_node in graph
+        let graph_ref = graph.borrow();
+        let function_nodes = graph_ref
             .node_indices()
             .filter(|n| {
-                graph.node_weight(*n).unwrap().as_any().is::<Function>()
-                    && graph.edges(*n).count() != 0
+                graph_ref.node_weight(*n).unwrap().as_any().is::<Function>()
+                    && graph_ref.edges(*n).count() != 0
             })
-            .collect::<Vec<_>>()
-        {
+            .collect::<Vec<_>>();
+        drop(graph_ref);
+        for function_node in function_nodes {
             // Create copy node
             let copy_node = graph
                 .add_op(CudaCopyToDevice::<T>::new(dev.clone()))
                 .input(function_node, 0, ShapeTracker::new(&[]))
                 .finish();
 
+            let mut graph_mut = graph.borrow_mut();
+
             // Switch outgoing edges from input to copy_node
-            for (edge_id, weight, dest) in graph
+            for (edge_id, weight, dest) in graph_mut
                 .edges_directed(function_node, petgraph::Direction::Outgoing)
                 .map(|e| (e.id(), *e.weight(), e.target()))
                 .filter(|(_, _, trg)| *trg != copy_node)
                 .collect::<Vec<_>>()
             {
-                graph.add_edge(copy_node, dest, weight);
-                graph.remove_edge(edge_id);
+                graph_mut.add_edge(copy_node, dest, weight);
+                graph_mut.remove_edge(edge_id);
             }
 
-            if graph.no_delete.remove(&function_node) {
-                graph.no_delete.insert(copy_node);
+            if graph_mut.no_delete.remove(&function_node) {
+                graph_mut.no_delete.insert(copy_node);
             }
-            if let Some(v) = graph.to_retrieve.get(&function_node) {
-                graph.to_retrieve.insert(copy_node, *v);
+            drop(graph_mut);
+            let v = graph.borrow().to_retrieve.get(&function_node).cloned();
+            let mut graph_mut = graph.borrow_mut();
+            if let Some(v) = v {
+                graph_mut.to_retrieve.insert(copy_node, v);
             }
+            drop(graph_mut);
 
             // Insert copy from device for function inputs
-            for (source, edge, edge_weight) in graph
+            let elems = graph
+                .borrow()
                 .edges_directed(function_node, petgraph::Direction::Incoming)
                 .map(|e| (e.source(), e.id(), *e.weight()))
-                .collect::<Vec<_>>()
-            {
+                .collect::<Vec<_>>();
+            for (source, edge, edge_weight) in elems {
                 let copy_from_node = graph
                     .add_op(CudaCopyFromDevice::<T>::new(dev.clone()))
                     .input(source, 0, ShapeTracker::new(&[]))
                     .finish();
-                graph.add_edge(copy_from_node, function_node, edge_weight);
-                graph.remove_edge(edge);
+                let mut graph_mut = graph.borrow_mut();
+                graph_mut.add_edge(copy_from_node, function_node, edge_weight);
+                graph_mut.remove_edge(edge);
             }
         }
 
+        let graph_ref = graph.borrow();
+
         // Copy to_retrieve from device
-        for (output_node, (_, output_shape)) in graph
+        let elems = graph_ref
             .to_retrieve
             .iter()
             .map(|(a, b)| (*a, *b))
             // Filter to non-functions
-            .filter(|(n, _)| !graph.node_weight(*n).unwrap().as_any().is::<LFunction>())
-            .collect::<Vec<_>>()
-        {
+            .filter(|(n, _)| {
+                !graph_ref
+                    .node_weight(*n)
+                    .unwrap()
+                    .as_any()
+                    .is::<LFunction>()
+            })
+            .collect::<Vec<_>>();
+        drop(graph_ref);
+        for (output_node, (_, output_shape)) in elems {
             if graph
+                .borrow()
                 .node_weight(output_node)
                 .unwrap()
                 .as_any()
@@ -756,13 +802,15 @@ impl<T: CudaFloat> Compiler for PrimitiveCompiler<T> {
             {
                 // This output is already a copy to, instead of adding a copy from, let's remap back to the source
                 let src = graph
+                    .borrow()
                     .neighbors_directed(output_node, petgraph::Direction::Incoming)
                     .next()
                     .unwrap();
-                graph.no_delete.remove(&output_node);
-                graph.no_delete.insert(src);
-                let w = graph.to_retrieve.remove(&output_node).unwrap();
-                graph.to_retrieve.insert(src, w);
+                let mut graph_mut = graph.borrow_mut();
+                graph_mut.no_delete.remove(&output_node);
+                graph_mut.no_delete.insert(src);
+                let w = graph_mut.to_retrieve.remove(&output_node).unwrap();
+                graph_mut.to_retrieve.insert(src, w);
             } else {
                 // Create copy node
                 let copy_node = graph
@@ -770,7 +818,7 @@ impl<T: CudaFloat> Compiler for PrimitiveCompiler<T> {
                     .input(output_node, 0, output_shape)
                     .finish();
 
-                remap(output_node, copy_node, &mut ids, graph);
+                remap(output_node, copy_node, &mut ids, &mut graph.borrow_mut());
             }
         }
 
@@ -778,79 +826,75 @@ impl<T: CudaFloat> Compiler for PrimitiveCompiler<T> {
             type_id == TypeId::of::<T>()
         }
 
+        let nodes = graph.borrow().node_indices().collect::<Vec<_>>();
+
         // Swap primitive ops
-        for id in graph.node_indices().collect::<Vec<_>>() {
-            let shapes = graph
+        for id in nodes {
+            let mut graph_mut = graph.borrow_mut();
+            let shapes = graph_mut
                 .edges_directed(id, petgraph::Direction::Incoming)
                 .filter_map(|i| i.weight().as_data())
                 .sorted_by_key(|e| e.0)
                 .map(|e| e.2)
                 .collect::<Vec<_>>();
-            let op = graph.node_weight(id).unwrap().as_any().type_id();
-            let op_ref = graph.graph.node_weight_mut(id).unwrap();
+            let op = graph_mut.node_weight(id).unwrap().as_any().type_id();
+            let dyn_map = graph_mut.dyn_map.clone();
+            let op_ref = graph_mut.graph.node_weight_mut(id).unwrap();
             if is::<Log2>(op) {
-                *op_ref = Box::new(CudaLog2::<T>::new(shapes[0], dev.clone(), &graph.dyn_map));
+                *op_ref = Box::new(CudaLog2::<T>::new(shapes[0], dev.clone(), dyn_map));
             } else if is::<Exp2>(op) {
-                *op_ref = Box::new(CudaExp2::<T>::new(shapes[0], dev.clone(), &graph.dyn_map));
+                *op_ref = Box::new(CudaExp2::<T>::new(shapes[0], dev.clone(), dyn_map));
             } else if is::<Sin>(op) {
-                *op_ref = Box::new(CudaSin::<T>::new(shapes[0], dev.clone(), &graph.dyn_map));
+                *op_ref = Box::new(CudaSin::<T>::new(shapes[0], dev.clone(), dyn_map));
             } else if let Some(c) = op_ref.as_any().downcast_ref::<Constant>() {
-                *op_ref = Box::new(CudaConstant::<T>::new(
-                    dev.clone(),
-                    c.0.clone(),
-                    &graph.dyn_map,
-                ));
+                *op_ref = Box::new(CudaConstant::<T>::new(dev.clone(), c.0.clone(), dyn_map));
             } else if is::<Recip>(op) {
-                *op_ref = Box::new(CudaRecip::<T>::new(shapes[0], dev.clone(), &graph.dyn_map));
+                *op_ref = Box::new(CudaRecip::<T>::new(shapes[0], dev.clone(), dyn_map));
             } else if is::<Sqrt>(op) {
-                *op_ref = Box::new(CudaSqrt::<T>::new(shapes[0], dev.clone(), &graph.dyn_map));
+                *op_ref = Box::new(CudaSqrt::<T>::new(shapes[0], dev.clone(), dyn_map));
             } else if is::<Add>(op) {
                 *op_ref = Box::new(CudaAdd::<T>::new(
                     shapes[0],
                     shapes[1],
                     dev.clone(),
-                    &graph.dyn_map,
+                    dyn_map,
                 ));
             } else if is::<Mul>(op) {
                 *op_ref = Box::new(CudaMul::<T>::new(
                     shapes[0],
                     shapes[1],
                     dev.clone(),
-                    &graph.dyn_map,
+                    dyn_map,
                 ));
             } else if is::<Mod>(op) {
                 *op_ref = Box::new(CudaMod::<T>::new(
                     shapes[0],
                     shapes[1],
                     dev.clone(),
-                    &graph.dyn_map,
+                    dyn_map,
                 ));
             } else if is::<LessThan>(op) {
                 *op_ref = Box::new(CudaLessThan::<T>::new(
                     shapes[0],
                     shapes[1],
                     dev.clone(),
-                    &graph.dyn_map,
+                    dyn_map,
                 ));
             } else if is::<Contiguous>(op) {
-                *op_ref = Box::new(CudaContiguous::<T>::new(
-                    shapes[0],
-                    dev.clone(),
-                    &graph.dyn_map,
-                ));
+                *op_ref = Box::new(CudaContiguous::<T>::new(shapes[0], dev.clone(), dyn_map));
             } else if let Some(SumReduce(dim)) = op_ref.as_any().downcast_ref() {
                 *op_ref = Box::new(CudaSumReduce::<T>::new(
                     *dim,
                     shapes[0],
                     dev.clone(),
-                    &graph.dyn_map,
+                    dyn_map,
                 ));
             } else if let Some(MaxReduce(dim)) = op_ref.as_any().downcast_ref() {
                 *op_ref = Box::new(CudaMaxReduce::<T>::new(
                     *dim,
                     shapes[0],
                     dev.clone(),
-                    &graph.dyn_map,
+                    dyn_map,
                 ));
             }
         }

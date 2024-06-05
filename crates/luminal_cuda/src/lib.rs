@@ -223,9 +223,8 @@ fn get_buffer_from_tensor<'a, T: CudaFloat>(tensor: &'a InputTensor) -> &'a Cuda
 fn input_dyn_dims(
     params: &mut Vec<*mut c_void>,
     dyn_symbols: &[char],
-    dyn_map: *const FxHashMap<char, usize>,
+    dyn_map: &FxHashMap<char, usize>,
 ) {
-    let dyn_map = unsafe { dyn_map.as_ref().unwrap() };
     for d in dyn_symbols {
         params.push(dyn_map[d].as_kernel_param());
     }

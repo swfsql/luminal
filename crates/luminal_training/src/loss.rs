@@ -34,11 +34,12 @@ pub fn huber_loss<S: Shape>(
     delta: impl Into<f32>,
 ) -> GraphTensor<()> {
     let delta: f32 = delta.into();
-    let abs_error = (prediction - target).abs();
-    let delta_tensor = prediction.graph().constant(delta);
+    let abs_error = (prediction.clone() - target.clone()).abs();
+    let delta_tensor = prediction.graph().unwrap().constant(delta);
     let huber_error = (0.5 * (prediction - target).square())
-        * abs_error.less_than(delta_tensor.expand())
-        + (delta * (abs_error - 0.5 * delta)) * abs_error.greater_than_equal(delta_tensor.expand());
+        * abs_error.clone().less_than(delta_tensor.clone().expand())
+        + (delta * (abs_error.clone() - 0.5 * delta))
+            * abs_error.greater_than_equal(delta_tensor.expand());
     huber_error.mean_reduce()
 }
 
@@ -74,6 +75,7 @@ pub fn cross_entropy_with_logits_loss<S: Shape>(
     let inv_last_axis_numel = 1.0
         / logits
             .graph()
+            .unwrap()
             .constant(logits.shape.shape().last().unwrap());
     let probs = logits.log_softmax::<S::LastAxis>();
     (-(probs * target_probabilities).mean_reduce()) / inv_last_axis_numel
@@ -96,9 +98,10 @@ pub fn kl_div_with_logits_loss<S: Shape>(
     let inv_last_axis_numel = 1.0
         / logits
             .graph()
+            .unwrap()
             .constant(logits.shape.shape().last().unwrap());
     let probs = logits.log_softmax::<S::LastAxis>();
-    (-((probs - target_probabilities.ln()) * target_probabilities).mean_reduce())
+    (-((probs - target_probabilities.clone().ln()) * target_probabilities).mean_reduce())
         / inv_last_axis_numel
 }
 
@@ -115,6 +118,6 @@ pub fn binary_cross_entropy_with_logits_loss<S: Shape>(
     logits: GraphTensor<S>,
     target_probabilities: GraphTensor<S>,
 ) -> GraphTensor<()> {
-    let bce = (1.0 - target_probabilities) * logits + (1.0 + (-logits).exp()).ln();
+    let bce = (1.0 - target_probabilities) * logits.clone() + (1.0 + (-logits).exp()).ln();
     bce.mean_reduce()
 }

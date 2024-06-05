@@ -1,7 +1,10 @@
 use cudarc::driver::{CudaDevice, CudaFunction, DeviceRepr, LaunchAsync, LaunchConfig};
 use regex::Regex;
 use rustc_hash::{FxHashMap, FxHashSet};
-use std::{any::Any, fmt::Debug, iter::once, marker::PhantomData, mem::size_of, sync::Arc};
+use std::{
+    any::Any, cell::RefCell, fmt::Debug, iter::once, marker::PhantomData, mem::size_of, rc::Rc,
+    sync::Arc,
+};
 
 use itertools::Itertools;
 use luminal::prelude::{
@@ -64,30 +67,35 @@ fn is_more_than_one_view(
 
 impl<T: CudaFloat> Compiler for ElementwiseFusionCompiler<T> {
     type Output = ();
-    fn compile<To: ToIdsMut>(&self, graph: &mut Graph, mut ids: To) {
+    fn compile<To: ToIdsMut>(&self, graph: &GraphWrapper, mut ids: To) {
         let device = CudaDevice::new(0).unwrap();
         // Track fused ops to compile later
         let mut fused_ops = FxHashSet::default();
 
         let mut matched = true;
         let mut elementwise_ops = FxHashMap::default();
-        for op in graph.node_indices().collect::<Vec<_>>() {
-            if let Some(exp) = graph.node_custom::<String, _>(op, "elementwise", ()) {
+
+        let mut graph_mut = graph.borrow_mut();
+        for op in graph_mut.node_indices().collect::<Vec<_>>() {
+            if let Some(exp) = graph_mut.node_custom::<String, _>(op, "elementwise", ()) {
                 elementwise_ops.insert(op, exp);
             }
         }
+        drop(graph_mut);
         let mut intermediate_regexes = FxHashMap::default();
         let mut input_regexes = FxHashMap::default();
         while matched {
             matched = false;
-            for edge in graph.edge_indices().collect::<Vec<_>>() {
-                let Some((a, b)) = graph.edge_endpoints(edge) else {
+            let edge_indices = graph.borrow().edge_indices().collect::<Vec<_>>();
+            for edge in edge_indices {
+                let graph_ref = graph.borrow();
+                let Some((a, b)) = graph_ref.edge_endpoints(edge) else {
                     continue;
                 };
-                if graph.no_delete.contains(&a)
-                    || graph.no_delete.contains(&b)
-                    || (!graph.check_node_type::<CudaConstant<T>>(a)
-                        && graph
+                if graph_ref.no_delete.contains(&a)
+                    || graph_ref.no_delete.contains(&b)
+                    || (!graph_ref.check_node_type::<CudaConstant<T>>(a)
+                        && graph_ref
                             .edges_directed(a, Direction::Outgoing)
                             .filter(|e| e.target() != b)
                             .count()
@@ -102,7 +110,7 @@ impl<T: CudaFloat> Compiler for ElementwiseFusionCompiler<T> {
                 };
                 // a and b are elementwise ops
                 // Make sure all edges from a to b share the same shape
-                if !graph
+                if !graph_ref
                     .edges_connecting(a, b)
                     .map(|e| e.weight().as_data().unwrap().2)
                     .all_equal()
@@ -110,11 +118,11 @@ impl<T: CudaFloat> Compiler for ElementwiseFusionCompiler<T> {
                     continue;
                 }
                 // Check if there are more than one view of this input. If so, we can't merge
-                let mut subexpressions_b = graph
+                let mut subexpressions_b = graph_ref
                     .try_get_op::<FusedElementwiseOp<T>>(b)
                     .map(|o| o.subexpressions.clone())
                     .unwrap_or_else(|| vec![(expression_b.clone(), ShapeTracker::new(&[]))]);
-                let a_to_b_indexes = graph
+                let a_to_b_indexes = graph_ref
                     .edges_connecting(a, b)
                     .map(|e| e.weight().as_data().unwrap().0 as usize)
                     .sorted()
@@ -123,14 +131,14 @@ impl<T: CudaFloat> Compiler for ElementwiseFusionCompiler<T> {
                     continue;
                 }
                 matched = true;
-                let a_inputs = get_inputs(a, graph);
-                let mut b_inputs = get_inputs(b, graph);
+                let a_inputs = get_inputs(a, &graph_ref);
+                let mut b_inputs = get_inputs(b, &graph_ref);
                 let (_, _, connecting_shape) = b_inputs.remove(*a_to_b_indexes.last().unwrap());
                 for i in a_to_b_indexes.iter().take(a_to_b_indexes.len() - 1).rev() {
                     b_inputs.remove(*i);
                 }
                 // Get subexpressions
-                let mut subexpressions_a = graph
+                let mut subexpressions_a = graph_ref
                     .try_get_op::<FusedElementwiseOp<T>>(a)
                     .map(|o| o.subexpressions.clone())
                     .unwrap_or_else(|| vec![(expression_a.clone(), ShapeTracker::new(&[]))]);
@@ -214,11 +222,11 @@ impl<T: CudaFloat> Compiler for ElementwiseFusionCompiler<T> {
                 }
                 // Create new fused op
                 let output_buffer_sizes =
-                    if let Some(o) = graph.try_get_op::<FusedElementwiseOp<T>>(b) {
+                    if let Some(o) = graph_ref.try_get_op::<FusedElementwiseOp<T>>(b) {
                         o.output_buffer_sizes.clone()
                     } else {
                         vec![
-                            graph
+                            graph_ref
                                 .edges_directed(b, Direction::Incoming)
                                 .filter_map(|e| e.weight().as_data().map(|i| i.2.n_elements()))
                                 .reduce(|acc, e| acc.max(e))
@@ -226,10 +234,12 @@ impl<T: CudaFloat> Compiler for ElementwiseFusionCompiler<T> {
                                 * size_of::<T>(),
                         ]
                     };
+                let dyn_map = graph_ref.dyn_map.clone();
+                drop(graph_ref);
                 let new_op = graph
                     .add_op(FusedElementwiseOp::<T> {
                         kernel: None,
-                        dyn_map: &graph.dyn_map,
+                        dyn_map,
                         dyn_chars: vec![],
                         subexpressions: subexpressions_b.clone(),
                         device: device.clone(),
@@ -237,10 +247,11 @@ impl<T: CudaFloat> Compiler for ElementwiseFusionCompiler<T> {
                         _phantom: Default::default(),
                     })
                     .finish();
+                let mut graph_mut = graph.borrow_mut();
                 // Add edges to new op
-                move_outgoing_edge(b, new_op, graph);
+                move_outgoing_edge(b, new_op, &mut graph_mut);
                 for (i, (node, output, shape)) in b_inputs.into_iter().enumerate() {
-                    graph.add_edge(
+                    graph_mut.add_edge(
                         node,
                         new_op,
                         Dependency::Data {
@@ -250,8 +261,8 @@ impl<T: CudaFloat> Compiler for ElementwiseFusionCompiler<T> {
                         },
                     );
                 }
-                graph.remove_node(b);
-                graph.safe_remove_node(a, 0);
+                graph_mut.remove_node(b);
+                graph_mut.safe_remove_node(a, 0);
                 // Keep track of the fused op so we can compile it later
                 fused_ops.remove(&a);
                 fused_ops.remove(&b);
@@ -259,10 +270,10 @@ impl<T: CudaFloat> Compiler for ElementwiseFusionCompiler<T> {
                 elementwise_ops.remove(&a);
                 elementwise_ops.remove(&b);
                 elementwise_ops.insert(new_op, String::new());
-                if !graph.contains_node(a) {
-                    remap(a, new_op, &mut ids, graph);
+                if !graph_mut.contains_node(a) {
+                    remap(a, new_op, &mut ids, &mut graph_mut);
                 }
-                remap(b, new_op, &mut ids, graph);
+                remap(b, new_op, &mut ids, &mut graph_mut);
             }
         }
         // Compile all the kernels we placed
@@ -270,12 +281,14 @@ impl<T: CudaFloat> Compiler for ElementwiseFusionCompiler<T> {
         let intermediate_match = Regex::new(r"intermediate(\d+)([^0-9]|$)").unwrap();
         for fused_op in fused_ops {
             let inputs = graph
+                .borrow()
                 .edges_directed(fused_op, Direction::Incoming)
                 .flat_map(|e| e.weight().as_data())
                 .sorted_by_key(|(i, _, _)| *i)
                 .map(|(_, _, sh)| sh)
                 .collect::<Vec<_>>();
-            let op = graph.get_op_mut::<FusedElementwiseOp<T>>(fused_op);
+            let mut graph_mut = graph.borrow_mut();
+            let op = graph_mut.get_op_mut::<FusedElementwiseOp<T>>(fused_op);
             // Stack index expressions and replace them in the subexpressions
             // Track all shapes used, will pull dyn dims from these
             let shapes_used = op
@@ -444,7 +457,7 @@ extern \"C\" __global__ void kernel({} {type_name}* out, const int n_elements{re
 #[derive(Clone)]
 pub struct FusedElementwiseOp<T> {
     kernel: Option<CudaFunction>,
-    dyn_map: *const FxHashMap<char, usize>,
+    dyn_map: Rc<RefCell<FxHashMap<char, usize>>>,
     dyn_chars: Vec<char>,
     subexpressions: Vec<(String, ShapeTracker)>,
     device: Arc<CudaDevice>,
@@ -459,7 +472,7 @@ impl<T> Debug for FusedElementwiseOp<T> {
 
 impl<T: CudaFloat> Operator for FusedElementwiseOp<T> {
     fn process(&mut self, tensors: Vec<(InputTensor, ShapeTracker)>) -> Vec<Tensor> {
-        let dyn_map = unsafe { self.dyn_map.as_ref().unwrap() };
+        let dyn_map = &self.dyn_map.as_ref().borrow();
         let out_size =
             self.output_buffer_sizes[0].exec(dyn_map).unwrap() / std::mem::size_of::<T>();
         let out_size_int = out_size as i32;
@@ -472,7 +485,7 @@ impl<T: CudaFloat> Operator for FusedElementwiseOp<T> {
         params.push((&out).as_kernel_param());
         params.push(out_size_int.as_kernel_param());
 
-        input_dyn_dims(&mut params, &self.dyn_chars, self.dyn_map);
+        input_dyn_dims(&mut params, &self.dyn_chars, dyn_map);
 
         unsafe {
             self.kernel
@@ -747,7 +760,7 @@ mod tests {
             }
         }
         impl<const I: usize, const H: usize> InitModule for Mlp<I, H> {
-            fn initialize(cx: &mut Graph) -> Self {
+            fn initialize(cx: &GraphWrapper) -> Self {
                 Self {
                     gate_proj: InitModule::initialize(cx),
                     up_proj: InitModule::initialize(cx),
@@ -874,7 +887,7 @@ mod tests {
         }
 
         impl InitModule for SelfAttention {
-            fn initialize(cx: &mut Graph) -> Self {
+            fn initialize(cx: &GraphWrapper) -> Self {
                 Self {
                     q_proj: cx
                         .named_tensor("Q Proj")
@@ -945,7 +958,7 @@ mod tests {
         }
 
         impl InitModule for TransformerBlock {
-            fn initialize(cx: &mut Graph) -> Self {
+            fn initialize(cx: &GraphWrapper) -> Self {
                 Self {
                     attention: InitModule::initialize(cx),
                     attention_norm: LayerNorm::init(true, false, false, 1e-5, cx),
@@ -997,7 +1010,7 @@ mod tests {
         }
 
         impl InitModule for MistralLM {
-            fn initialize(cx: &mut Graph) -> Self {
+            fn initialize(cx: &GraphWrapper) -> Self {
                 Self {
                     norm: LayerNorm::init(true, false, false, 1e-5, cx),
                     layers: (0..NUM_LAYERS)

@@ -6,14 +6,20 @@ use luminal::{op::Function, prelude::*};
 use memmap2::MmapOptions;
 use safetensors::{Dtype, SafeTensors};
 
-pub fn load<M: SerializeModule>(path: &str, model: &M, graph: &mut Graph) {
+pub fn load<M: SerializeModule>(
+    path: impl AsRef<std::path::Path>,
+    model: &M,
+    graph: &GraphWrapper,
+) {
     for (weight_name, node_index) in param_dict(model) {
         if let Some(loading_node) = graph
+            .as_ref()
+            .borrow_mut()
             .graph
             .node_weight_mut(node_index)
             .and_then(|op| op.as_any_mut().downcast_mut::<Function>())
         {
-            let path = path.to_string();
+            let path = std::path::PathBuf::from(path.as_ref());
             loading_node.1 = Box::new(move |_| {
                 let mut bytes = vec![];
                 let mut file = File::open(&path).unwrap();

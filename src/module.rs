@@ -7,7 +7,7 @@ use crate::prelude::*;
 
 /// A module that can initialize it's variables on the graph
 pub trait InitModule {
-    fn initialize(cx: &mut Graph) -> Self;
+    fn initialize(cx: &GraphWrapper) -> Self;
 }
 
 /// A module with a forward pass
@@ -35,14 +35,19 @@ pub fn params(model: impl SerializeModule) -> Vec<NodeIndex> {
 /// Transfer data from one set of nodes in one graph to another set in another graph
 pub fn transfer_data(
     srcs: impl ToIds,
-    src_graph: &mut Graph,
+    src_graph: &GraphWrapper,
     dests: impl ToIds,
-    dest_graph: &mut Graph,
+    dest_graph: &GraphWrapper,
 ) {
-    for (src, dest) in srcs.to_ids().into_iter().zip(dests.to_ids().into_iter()) {
+    let srcs = srcs.to_ids();
+    let dests = dests.to_ids();
+    debug_assert_eq!(srcs.len(), dests.len());
+    for (src, dest) in srcs.into_iter().zip(dests.into_iter()) {
         let mut output_num = 0;
-        while let Some(tensor) = src_graph.tensors.remove(&(src, output_num)) {
-            dest_graph.tensors.insert((dest, output_num), tensor);
+        let mut src_graph_mut = src_graph.borrow_mut();
+        let mut dest_graph_mut = dest_graph.borrow_mut();
+        while let Some(tensor) = src_graph_mut.tensors.remove(&(src, output_num)) {
+            dest_graph_mut.tensors.insert((dest, output_num), tensor);
             output_num += 1;
         }
         if output_num == 0 {
@@ -52,11 +57,12 @@ pub fn transfer_data(
 }
 
 /// Transfer data from one set of nodes to another set in the same graph
-pub fn transfer_data_same_graph(srcs: impl ToIds, dests: impl ToIds, graph: &mut Graph) {
+pub fn transfer_data_same_graph(srcs: impl ToIds, dests: impl ToIds, graph: &GraphWrapper) {
     for (src, dest) in srcs.to_ids().into_iter().zip(dests.to_ids().into_iter()) {
         let mut output_num = 0;
-        while let Some(tensor) = graph.tensors.remove(&(src, output_num)) {
-            graph.tensors.insert((dest, output_num), tensor);
+        let mut graph_mut = graph.borrow_mut();
+        while let Some(tensor) = graph_mut.tensors.remove(&(src, output_num)) {
+            graph_mut.tensors.insert((dest, output_num), tensor);
             output_num += 1;
         }
         if output_num == 0 {
@@ -66,42 +72,44 @@ pub fn transfer_data_same_graph(srcs: impl ToIds, dests: impl ToIds, graph: &mut
 }
 
 /// Delete all incoming nodes to this set of nodes
-pub fn delete_inputs(nodes: impl ToIds, graph: &mut Graph) {
+pub fn delete_inputs(nodes: impl ToIds, graph: &GraphWrapper) {
     for node in nodes.to_ids() {
         delete_upstream(graph, node);
     }
     graph.toposort();
 }
 
-fn delete_upstream(graph: &mut Graph, node: NodeIndex) {
-    for e in graph
+fn delete_upstream(graph: &GraphWrapper, node: NodeIndex) {
+    let nodes = graph
+        .borrow()
         .graph
         .edges_directed(node, petgraph::Direction::Incoming)
         .filter(|e| !e.weight().is_schedule())
         .map(|e| e.source())
-        .collect::<Vec<_>>()
-    {
+        .collect::<Vec<_>>();
+    for e in nodes {
         delete_upstream(graph, e);
-        graph.graph.remove_node(e);
+        graph.borrow_mut().graph.remove_node(e);
     }
 }
 
 /// Get the downstream set from an original set, in a deterministic order
-pub fn downstream(nodes: impl ToIds, graph: &Graph) -> Vec<NodeIndex> {
+pub fn downstream(nodes: impl ToIds, graph: &GraphWrapper) -> Vec<NodeIndex> {
     let orig_set = nodes.to_ids().into_iter().collect::<FxHashSet<_>>();
     let mut fin = vec![];
     let mut added = FxHashSet::default();
     // Loop through nodes
+    let graph_ref = graph.borrow();
     for mut node in nodes.to_ids() {
         // Go downstream as far as possible along a single stream of ops
-        while graph
+        while graph_ref
             .graph
             .edges_directed(node, Direction::Outgoing)
             .filter(|e| !e.weight().is_schedule())
             .count()
             == 1
         {
-            let new_node = graph
+            let new_node = graph_ref
                 .graph
                 .edges_directed(node, Direction::Outgoing)
                 .next()
@@ -120,12 +128,13 @@ pub fn downstream(nodes: impl ToIds, graph: &Graph) -> Vec<NodeIndex> {
     fin
 }
 
-fn is_from_set(node: NodeIndex, graph: &Graph, set: &FxHashSet<NodeIndex>) -> bool {
+fn is_from_set(node: NodeIndex, graph: &GraphWrapper, set: &FxHashSet<NodeIndex>) -> bool {
     // Reverse dfs upward
     let mut stack = vec![node];
+    let graph_ref = graph.borrow();
     while let Some(node) = stack.pop() {
         if !set.contains(&node) {
-            let mut new_nodes = graph
+            let mut new_nodes = graph_ref
                 .graph
                 .edges_directed(node, Direction::Incoming)
                 .filter(|e| !e.weight().is_schedule())
@@ -198,7 +207,7 @@ macro_rules! tuple_impls {
         }
 
         impl<$($name: InitModule,)+> InitModule for ($($name,)+) {
-            fn initialize(cx: &mut Graph) -> Self {
+            fn initialize(cx: &GraphWrapper) -> Self {
                 (
                 $($name::initialize(cx),)+
                 )

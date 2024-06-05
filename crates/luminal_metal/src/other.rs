@@ -24,7 +24,7 @@ pub struct CopyCompiler<T>(PhantomData<T>);
 
 impl<T: MetalFloat> Compiler for CopyCompiler<T> {
     type Output = ();
-    fn compile<To: ToIdsMut>(&self, graph: &mut Graph, mut ids: To) {
+    fn compile<To: ToIdsMut>(&self, graph: &GraphWrapper, mut ids: To) {
         let first = op::<MetalCopyToDevice<T>>();
         let second = op::<MetalCopyFromDevice<T>>();
         let mut s = first.clone().connect(second.clone()).search(graph);
@@ -179,7 +179,7 @@ pub struct ARangeCompiler<T: MetalFloat>(PhantomData<T>);
 
 impl<T: MetalFloat> Compiler for ARangeCompiler<T> {
     type Output = ();
-    fn compile<To: ToIdsMut>(&self, graph: &mut Graph, _: To) {
+    fn compile<To: ToIdsMut>(&self, graph: &GraphWrapper, _: To) {
         let dev = Device::system_default().unwrap();
         let queue = dev.new_command_queue();
 

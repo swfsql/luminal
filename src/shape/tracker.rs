@@ -362,7 +362,7 @@ mod tests {
 
     #[test]
     fn test_symbolic_idx() {
-        let mut cx = Graph::new();
+        let cx = Graph::new();
         const SEQ: usize = 2;
         const HEAD_DIM: usize = 4;
         const HEAD_DIM_OVER_2: usize = HEAD_DIM / 2;
@@ -370,7 +370,8 @@ mod tests {
         let _b = cx.tensor::<R3<SEQ, HEAD_DIM_OVER_2, 1>>().keep();
         // Split input into evens and odds
         let split = a.reshape::<R3<SEQ, HEAD_DIM_OVER_2, 2>>();
-        let x0: GraphTensor<R3<SEQ, HEAD_DIM_OVER_2, 1>> = split.slice((.., .., ..1)).realize();
+        let x0: GraphTensor<R3<SEQ, HEAD_DIM_OVER_2, 1>> =
+            split.clone().slice((.., .., ..1)).realize();
         let _x1: GraphTensor<R3<SEQ, HEAD_DIM_OVER_2, 1>> = split.slice((.., .., 1..)).realize();
 
         println!("x0: {:?}", x0.shape.index_expression());

@@ -45,6 +45,7 @@ impl VersionedMagic {
     }
 }
 
+#[allow(dead_code)]
 #[derive(Debug)]
 pub struct Content {
     pub magic: VersionedMagic,
@@ -104,6 +105,7 @@ pub enum ValueType {
     Array,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub enum Value {
     U8(u8),

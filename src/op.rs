@@ -1,7 +1,8 @@
 use std::{
     any::Any,
-    borrow::BorrowMut,
+    cell::RefCell,
     fmt::Debug,
+    rc::Rc,
     sync::{Arc, Mutex},
 };
 
@@ -10,26 +11,38 @@ use crate::prelude::*;
 use dyn_clone::{clone_trait_object, DynClone};
 use rustc_hash::FxHashMap;
 
+// /// A tensor with data. The data can be anything that implements the Data trait
+// #[derive(Debug, Clone)]
+// pub struct Tensor {
+//     data: Box<dyn Data>,
+// }
+
 /// A tensor with data. The data can be anything that implements the Data trait
 #[derive(Debug, Clone)]
 pub struct Tensor {
-    data: Box<dyn Data>,
+    data: Rc<dyn Data>,
 }
 
 impl Tensor {
     pub fn new<T: Data>(data: T) -> Self {
         Self {
-            data: Box::new(data),
+            data: Rc::new(data),
         }
+    }
+    pub fn new_with(data: Rc<dyn Data>) -> Self {
+        Self { data }
     }
     pub fn downcast_ref<T: Data>(&self) -> Option<&T> {
         self.data.as_any().downcast_ref()
     }
     pub fn downcast_mut<T: Data>(&mut self) -> Option<&mut T> {
-        self.data.as_any_mut().downcast_mut()
+        Rc::get_mut(&mut self.data).and_then(|data| data.as_any_mut().downcast_mut())
     }
     pub fn is<T: Data>(&self) -> bool {
         self.data.as_any().is::<T>()
+    }
+    pub fn is_owned(&self) -> bool {
+        Rc::strong_count(&self.data) == 1
     }
 }
 
@@ -51,28 +64,30 @@ impl Data for Vec<f32> {
 }
 
 /// Either an owned or borrowed tensor that gets consumed by ops
-pub enum InputTensor<'a> {
-    /// An owned tensor
-    Owned(Tensor),
-    /// A borrowed tensor
-    Borrowed(&'a Tensor),
-}
+pub struct InputTensor(Tensor);
 
-impl<'a> InputTensor<'a> {
+impl InputTensor {
+    pub fn new(tensor: Tensor) -> Self {
+        Self(tensor)
+    }
+
     /// Borrow the tensor
-    pub fn borrowed(&'a self) -> &'a Tensor {
-        match self {
-            InputTensor::Owned(t) => t,
-            InputTensor::Borrowed(t) => t,
-        }
+    pub fn borrowed(&self) -> &Tensor {
+        &self.0
     }
 
     /// Unwrap or clone the tensor, depending on if it's owned or not
     pub fn cloned(self) -> Tensor {
-        match self {
-            InputTensor::Owned(t) => t,
-            InputTensor::Borrowed(t) => t.clone(),
+        if self.is_owned() {
+            self.0
+        } else {
+            let clone_box = dyn_clone::clone_box(&*self.0.data);
+            Tensor::new_with(Rc::from(clone_box))
         }
+    }
+
+    pub fn is_owned(&self) -> bool {
+        self.0.is_owned()
     }
 }
 
@@ -89,7 +104,7 @@ pub trait Operator: Debug + as_any::AsAny {
     }
 }
 
-impl<T: Operator> Operator for Box<T> {
+impl<T: Operator + Clone> Operator for Box<T> {
     fn custom(&mut self, key: &str, input: Box<dyn Any>) -> Option<Box<dyn Any>> {
         <T as Operator>::custom(self, key, input)
     }
@@ -99,10 +114,17 @@ impl<T: Operator> Operator for Box<T> {
 }
 impl<T: Operator> Operator for Arc<Mutex<T>> {
     fn custom(&mut self, key: &str, input: Box<dyn Any>) -> Option<Box<dyn Any>> {
-        <T as Operator>::custom(self.lock().unwrap().borrow_mut(), key, input)
+        <T as Operator>::custom(
+            std::borrow::BorrowMut::borrow_mut(&mut self.lock().unwrap()),
+            key,
+            input,
+        )
     }
     fn process(&mut self, inp: Vec<(InputTensor, ShapeTracker)>) -> Vec<Tensor> {
-        <T as Operator>::process(self.lock().unwrap().borrow_mut(), inp)
+        <T as Operator>::process(
+            std::borrow::BorrowMut::borrow_mut(&mut self.lock().unwrap()),
+            inp,
+        )
     }
 }
 
@@ -140,7 +162,7 @@ pub enum ConstantValue {
 
 /// Produces a single number constant from an expression or a float
 #[derive(Clone, PartialEq)]
-pub struct Constant(pub ConstantValue, pub *const FxHashMap<char, usize>);
+pub struct Constant(pub ConstantValue, pub Rc<RefCell<FxHashMap<char, usize>>>);
 impl Debug for Constant {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "Constant(",)?;
@@ -155,9 +177,7 @@ impl Debug for Constant {
 impl Operator for Constant {
     fn process(&mut self, _: Vec<(InputTensor, ShapeTracker)>) -> Vec<Tensor> {
         vec![Tensor::new(vec![match &self.0 {
-            ConstantValue::Expression(e) => {
-                e.exec(unsafe { self.1.as_ref().unwrap() }).unwrap() as f32
-            }
+            ConstantValue::Expression(e) => e.exec(&self.1.borrow()).unwrap() as f32,
             ConstantValue::Float(f) => *f,
         }])]
     }
@@ -170,10 +190,12 @@ impl Operator for Constant {
 pub struct Contiguous;
 impl Operator for Contiguous {
     fn process(&mut self, inp: Vec<(InputTensor, ShapeTracker)>) -> Vec<Tensor> {
+        debug_assert_eq!(inp.len(), 1);
+        let inp = &inp[0];
         // Copy data over to new tensor
-        let inp_data = get_vec(&inp[0].0);
-        let mut out_data = vec![0.; inp[0].1.n_elements().to_usize().unwrap()];
-        let expr = (inp[0].1.index_expression(), inp[0].1.valid_expression());
+        let inp_data = get_vec(&inp.0);
+        let mut out_data = vec![0.; inp.1.n_elements().to_usize().unwrap()];
+        let expr = (inp.1.index_expression(), inp.1.valid_expression());
         let mut stack = vec![];
         for (i, out) in out_data.iter_mut().enumerate() {
             *out = get_index(inp_data, &expr, &mut stack, i);
@@ -186,9 +208,11 @@ impl Operator for Contiguous {
 pub struct Log2;
 impl Operator for Log2 {
     fn process(&mut self, inp: Vec<(InputTensor, ShapeTracker)>) -> Vec<Tensor> {
-        let mut out_data = vec![0.; inp[0].1.n_elements().to_usize().unwrap()];
-        let inp_data = get_vec(&inp[0].0);
-        let expr = (inp[0].1.index_expression(), inp[0].1.valid_expression());
+        debug_assert_eq!(inp.len(), 1);
+        let inp = &inp[0];
+        let mut out_data = vec![0.; inp.1.n_elements().to_usize().unwrap()];
+        let inp_data = get_vec(&inp.0);
+        let expr = (inp.1.index_expression(), inp.1.valid_expression());
         let mut stack = vec![];
         for (i, out) in out_data.iter_mut().enumerate() {
             *out = get_index(inp_data, &expr, &mut stack, i).log2();
@@ -201,9 +225,11 @@ impl Operator for Log2 {
 pub struct Exp2;
 impl Operator for Exp2 {
     fn process(&mut self, inp: Vec<(InputTensor, ShapeTracker)>) -> Vec<Tensor> {
-        let mut out_data = vec![0.; inp[0].1.n_elements().to_usize().unwrap()];
-        let inp_data = get_vec(&inp[0].0);
-        let expr = (inp[0].1.index_expression(), inp[0].1.valid_expression());
+        debug_assert_eq!(inp.len(), 1);
+        let inp = &inp[0];
+        let mut out_data = vec![0.; inp.1.n_elements().to_usize().unwrap()];
+        let inp_data = get_vec(&inp.0);
+        let expr = (inp.1.index_expression(), inp.1.valid_expression());
         let mut stack = vec![];
         for (i, out) in out_data.iter_mut().enumerate() {
             *out = get_index(inp_data, &expr, &mut stack, i).exp2();
@@ -216,9 +242,11 @@ impl Operator for Exp2 {
 pub struct Sin;
 impl Operator for Sin {
     fn process(&mut self, inp: Vec<(InputTensor, ShapeTracker)>) -> Vec<Tensor> {
-        let mut out_data = vec![0.; inp[0].1.n_elements().to_usize().unwrap()];
-        let inp_data = get_vec(&inp[0].0);
-        let expr = (inp[0].1.index_expression(), inp[0].1.valid_expression());
+        debug_assert_eq!(inp.len(), 1);
+        let inp = &inp[0];
+        let mut out_data = vec![0.; inp.1.n_elements().to_usize().unwrap()];
+        let inp_data = get_vec(&inp.0);
+        let expr = (inp.1.index_expression(), inp.1.valid_expression());
         let mut stack = vec![];
         for (i, out) in out_data.iter_mut().enumerate() {
             *out = get_index(inp_data, &expr, &mut stack, i).sin();
@@ -231,12 +259,16 @@ impl Operator for Sin {
 pub struct Recip;
 impl Operator for Recip {
     fn process(&mut self, inp: Vec<(InputTensor, ShapeTracker)>) -> Vec<Tensor> {
-        let mut out_data = vec![0.; inp[0].1.n_elements().to_usize().unwrap()];
-        let inp_data = get_vec(&inp[0].0);
-        let expr = (inp[0].1.index_expression(), inp[0].1.valid_expression());
+        debug_assert_eq!(inp.len(), 1);
+        let inp = &inp[0];
+        let mut out_data = vec![0.; inp.1.n_elements().to_usize().unwrap()];
+        let inp_data = get_vec(&inp.0);
+        let expr = (inp.1.index_expression(), inp.1.valid_expression());
         let mut stack = vec![];
         for (i, out) in out_data.iter_mut().enumerate() {
-            *out = get_index(inp_data, &expr, &mut stack, i).recip();
+            let v = get_index(inp_data, &expr, &mut stack, i);
+            debug_assert_ne!(v, 0.);
+            *out = v.recip();
         }
         vec![Tensor::new(out_data)]
     }
@@ -246,12 +278,16 @@ impl Operator for Recip {
 pub struct Sqrt;
 impl Operator for Sqrt {
     fn process(&mut self, inp: Vec<(InputTensor, ShapeTracker)>) -> Vec<Tensor> {
-        let mut out_data = vec![0.; inp[0].1.n_elements().to_usize().unwrap()];
-        let inp_data = get_vec(&inp[0].0);
-        let expr = (inp[0].1.index_expression(), inp[0].1.valid_expression());
+        debug_assert_eq!(inp.len(), 1);
+        let inp = &inp[0];
+        let mut out_data = vec![0.; inp.1.n_elements().to_usize().unwrap()];
+        let inp_data = get_vec(&inp.0);
+        let expr = (inp.1.index_expression(), inp.1.valid_expression());
         let mut stack = vec![];
         for (i, out) in out_data.iter_mut().enumerate() {
-            *out = get_index(inp_data, &expr, &mut stack, i).sqrt();
+            let v = get_index(inp_data, &expr, &mut stack, i);
+            debug_assert!(v >= -0.);
+            *out = v.sqrt();
         }
         vec![Tensor::new(out_data)]
     }
@@ -263,12 +299,14 @@ impl Operator for Sqrt {
 pub struct Add;
 impl Operator for Add {
     fn process(&mut self, inp: Vec<(InputTensor, ShapeTracker)>) -> Vec<Tensor> {
+        debug_assert_eq!(inp.len(), 2);
         let (lhs, rhs) = (get_vec(&inp[0].0), get_vec(&inp[1].0));
         let lexpr = (inp[0].1.index_expression(), inp[0].1.valid_expression());
         let rexpr = (inp[1].1.index_expression(), inp[1].1.valid_expression());
         let mut stack = vec![];
         let mut out_data = vec![0.; inp[0].1.n_elements().to_usize().unwrap()];
         for (i, out) in out_data.iter_mut().enumerate() {
+            // NOTE: f32 doesn't error for this operation
             *out = get_index(lhs, &lexpr, &mut stack, i) + get_index(rhs, &rexpr, &mut stack, i);
         }
         vec![Tensor::new(out_data)]
@@ -279,12 +317,14 @@ impl Operator for Add {
 pub struct Mul;
 impl Operator for Mul {
     fn process(&mut self, inp: Vec<(InputTensor, ShapeTracker)>) -> Vec<Tensor> {
+        debug_assert_eq!(inp.len(), 2);
         let (lhs, rhs) = (get_vec(&inp[0].0), get_vec(&inp[1].0));
         let mut out_data = vec![0.; inp[0].1.n_elements().to_usize().unwrap()];
         let lexpr = (inp[0].1.index_expression(), inp[0].1.valid_expression());
         let rexpr = (inp[1].1.index_expression(), inp[1].1.valid_expression());
         let mut stack = vec![];
         for (i, out) in out_data.iter_mut().enumerate() {
+            // NOTE: f32 doesn't error for this operation
             *out = get_index(lhs, &lexpr, &mut stack, i) * get_index(rhs, &rexpr, &mut stack, i);
         }
         vec![Tensor::new(out_data)]
@@ -295,13 +335,17 @@ impl Operator for Mul {
 pub struct Mod;
 impl Operator for Mod {
     fn process(&mut self, inp: Vec<(InputTensor, ShapeTracker)>) -> Vec<Tensor> {
+        debug_assert_eq!(inp.len(), 2);
         let (lhs, rhs) = (get_vec(&inp[0].0), get_vec(&inp[1].0));
         let mut out_data = vec![0.; inp[0].1.n_elements().to_usize().unwrap()];
         let lexpr = (inp[0].1.index_expression(), inp[0].1.valid_expression());
         let rexpr = (inp[1].1.index_expression(), inp[1].1.valid_expression());
         let mut stack = vec![];
         for (i, out) in out_data.iter_mut().enumerate() {
-            *out = get_index(lhs, &lexpr, &mut stack, i) % get_index(rhs, &rexpr, &mut stack, i);
+            let lhs = get_index(lhs, &lexpr, &mut stack, i);
+            let rhs = get_index(rhs, &rexpr, &mut stack, i);
+            debug_assert_ne!(rhs, 0.);
+            *out = lhs % rhs;
         }
         vec![Tensor::new(out_data)]
     }
@@ -311,6 +355,7 @@ impl Operator for Mod {
 pub struct LessThan;
 impl Operator for LessThan {
     fn process(&mut self, inp: Vec<(InputTensor, ShapeTracker)>) -> Vec<Tensor> {
+        debug_assert_eq!(inp.len(), 2);
         let (lhs, rhs) = (get_vec(&inp[0].0), get_vec(&inp[1].0));
         let mut out_data = vec![0.; inp[0].1.n_elements().to_usize().unwrap()];
         let lexpr = (inp[0].1.index_expression(), inp[0].1.valid_expression());
@@ -330,17 +375,20 @@ impl Operator for LessThan {
 pub struct SumReduce(pub usize);
 impl Operator for SumReduce {
     fn process(&mut self, inp: Vec<(InputTensor, ShapeTracker)>) -> Vec<Tensor> {
-        let sh = inp[0].1.shape_usize();
+        debug_assert_eq!(inp.len(), 1);
+        let inp = &inp[0];
+        let sh = inp.1.shape_usize();
         let front_size = sh.iter().take(self.0).product::<usize>().max(1);
         let back_size = sh.iter().skip(self.0 + 1).product::<usize>().max(1);
         let dim_size = sh[self.0];
         let mut result = vec![0.0; front_size * back_size];
-        let input = get_vec(&inp[0].0);
-        let expr = (inp[0].1.index_expression(), inp[0].1.valid_expression());
+        let input = get_vec(&inp.0);
+        let expr = (inp.1.index_expression(), inp.1.valid_expression());
         let mut stack = vec![];
         for i in 0..front_size {
             for j in 0..back_size {
                 for k in 0..dim_size {
+                    // NOTE: f32 doesn't error for this operation
                     let orig_index = i * dim_size * back_size + k * back_size + j;
                     result[i * back_size + j] += get_index(input, &expr, &mut stack, orig_index);
                 }
@@ -354,18 +402,21 @@ impl Operator for SumReduce {
 pub struct MaxReduce(pub usize);
 impl Operator for MaxReduce {
     fn process(&mut self, inp: Vec<(InputTensor, ShapeTracker)>) -> Vec<Tensor> {
-        let sh = inp[0].1.shape_usize();
+        debug_assert_eq!(inp.len(), 1);
+        let inp = &inp[0];
+        let sh = inp.1.shape_usize();
         let front_size = sh.iter().take(self.0).product::<usize>().max(1);
         let back_size = sh.iter().skip(self.0 + 1).product::<usize>().max(1);
         let dim_size = sh[self.0];
         let mut result = vec![-f32::INFINITY; front_size * back_size];
-        let input = get_vec(&inp[0].0);
-        let expr = (inp[0].1.index_expression(), inp[0].1.valid_expression());
+        let input = get_vec(&inp.0);
+        let expr = (inp.1.index_expression(), inp.1.valid_expression());
         let mut stack = vec![];
 
         for i in 0..front_size {
             for j in 0..back_size {
                 for k in 0..dim_size {
+                    // NOTE: f32 doesn't error for this operation
                     let orig_index = i * dim_size * back_size + k * back_size + j;
                     let new_index = i * back_size + j;
                     result[new_index] =
@@ -377,7 +428,7 @@ impl Operator for MaxReduce {
     }
 }
 
-fn get_vec<'a>(tensor: &'a InputTensor<'a>) -> &'a Vec<f32> {
+fn get_vec(tensor: &InputTensor) -> &Vec<f32> {
     tensor.borrowed().downcast_ref::<Vec<f32>>().unwrap()
 }
 

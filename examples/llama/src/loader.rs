@@ -168,7 +168,7 @@ pub fn q8_load<P: AsRef<Path>, M: SerializeModule>(
 pub fn q8_load<P: AsRef<Path>, M: SerializeModule>(
     path: P,
     model: &M,
-    graph: &mut Graph,
+    graph: &GraphWrapper,
 ) -> Vec<NodeIndex> {
     #[repr(C, packed)]
     #[derive(Clone, Copy)]
@@ -189,6 +189,8 @@ pub fn q8_load<P: AsRef<Path>, M: SerializeModule>(
     let mut q8_weights = vec![];
     for (weight_name, node_index) in param_dict(model) {
         if let Some(loading_node) = graph
+            .as_ref()
+            .borrow_mut()
             .graph
             .node_weight_mut(node_index)
             .and_then(|op| op.as_any_mut().downcast_mut::<Function>())

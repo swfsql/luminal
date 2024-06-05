@@ -4,7 +4,7 @@ use luminal::prelude::*;
 pub struct ReLU;
 
 impl InitModule for ReLU {
-    fn initialize(_: &mut Graph) -> Self {
+    fn initialize(_: &GraphWrapper) -> Self {
         Self
     }
 }
@@ -25,7 +25,7 @@ impl<S: Shape> Module<GraphTensor<S>> for ReLU {
 pub struct Sigmoid;
 
 impl InitModule for Sigmoid {
-    fn initialize(_: &mut Graph) -> Self {
+    fn initialize(_: &GraphWrapper) -> Self {
         Self
     }
 }
@@ -46,7 +46,7 @@ impl<S: ConstShape> Module<GraphTensor<S>> for Sigmoid {
 pub struct Swish;
 
 impl InitModule for Swish {
-    fn initialize(_: &mut Graph) -> Self {
+    fn initialize(_: &GraphWrapper) -> Self {
         Self
     }
 }
@@ -67,7 +67,7 @@ impl<S: ConstShape> Module<GraphTensor<S>> for Swish {
 pub struct Tanh;
 
 impl InitModule for Tanh {
-    fn initialize(_: &mut Graph) -> Self {
+    fn initialize(_: &GraphWrapper) -> Self {
         Self
     }
 }
@@ -97,18 +97,23 @@ mod tests {
     #[test]
     fn test_relu_and_linear() {
         // Test single and batch, unoptimized and optimized
-        let mut cx = Graph::new();
+        let cx = Graph::new();
         let batch = cx
             .tensor::<R2<2, 3>>()
             .set(vec![1.0, 2.0, 3.0, 1.0, 2.0, 3.0]);
         let a = cx.tensor::<R1<3>>().set(vec![1.0, 2.0, 3.0]);
 
-        let model: (Linear<3, 4>, ReLU, Linear<4, 2>) = InitModule::initialize(&mut cx);
+        let model: (Linear<3, 4>, ReLU, Linear<4, 2>) = InitModule::initialize(&cx);
         model
             .0
             .weight
+            .clone()
             .set(vec![1., 2., 3., 1., 2., 3., 1., 2., 3., 1., 2., 3.]);
-        model.2.weight.set(vec![1., 2., 3., 1., 2., 3., 1., 2.]);
+        model
+            .2
+            .weight
+            .clone()
+            .set(vec![1., 2., 3., 1., 2., 3., 1., 2.]);
         let mut b = model.forward(a).retrieve();
         let mut batch_out = model.forward(batch).retrieve();
 

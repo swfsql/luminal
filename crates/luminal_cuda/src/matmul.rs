@@ -113,7 +113,7 @@ where
     CudaData<T>: Data,
 {
     type Output = ();
-    fn compile<To: ToIdsMut>(&self, graph: &mut Graph, mut ids: To) {
+    fn compile<To: ToIdsMut>(&self, graph: &GraphWrapper, mut ids: To) {
         let dev = CudaDevice::new(0).unwrap();
         // Look for the matmul pattern
         // Mul ([A, C(fake), B] | [A(fake), C, B]) -> SumReduce(2) -> [A, C]
@@ -204,12 +204,13 @@ where
             } else {
                 (s5d.get(&mul5d), s5d.get(&sr5d))
             };
-            if graph.no_delete.contains(&mul) {
+            let graph_ref = graph.borrow();
+            if graph_ref.no_delete.contains(&mul) {
                 // The intermediate mul can't be deleted
                 continue;
             }
             // Insert Matmul op
-            let srcs = graph.get_sources(mul);
+            let srcs = graph_ref.get_sources(mul);
             let (src1, mut src1_shape) = (srcs[0].0, srcs[0].2);
             let (src2, mut src2_shape) = (srcs[1].0, srcs[1].2);
             // Undo expansions and permute
@@ -218,6 +219,7 @@ where
             let mut dims = (0..src2_shape.len()).collect::<Vec<_>>();
             dims.swap(src2_shape.len() - 2, src2_shape.len() - 1);
             src2_shape.permute(&dims);
+            drop(graph_ref);
             let new_op = graph
                 .add_op(Matmul::<T>(
                     Arc::new(CudaBlas::new(dev.clone()).unwrap()),
@@ -229,13 +231,14 @@ where
                 .finish();
 
             // Create edges to dests
-            move_outgoing_edge(sum_reduce, new_op, &mut graph.graph);
-            remap(sum_reduce, new_op, &mut ids, graph);
-            remap(mul, new_op, &mut ids, graph);
+            let mut graph_mut = graph.borrow_mut();
+            move_outgoing_edge(sum_reduce, new_op, &mut graph_mut.graph);
+            remap(sum_reduce, new_op, &mut ids, &mut graph_mut);
+            remap(mul, new_op, &mut ids, &mut graph_mut);
 
             // Remove the old ops
-            graph.graph.remove_node(mul);
-            graph.graph.remove_node(sum_reduce);
+            graph_mut.graph.remove_node(mul);
+            graph_mut.graph.remove_node(sum_reduce);
         }
     }
 }

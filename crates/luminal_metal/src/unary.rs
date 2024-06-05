@@ -180,7 +180,7 @@ pub struct MeanReduceCompiler<T>(PhantomData<T>);
 
 impl<T: MetalFloat> Compiler for MeanReduceCompiler<T> {
     type Output = ();
-    fn compile<To: ToIdsMut>(&self, graph: &mut Graph, mut ids: To) {
+    fn compile<To: ToIdsMut>(&self, graph: &GraphWrapper, mut ids: To) {
         let dev = Device::system_default().unwrap();
         let queue = dev.new_command_queue();
         // Look for the mean-reduce pattern
@@ -391,7 +391,7 @@ pub struct StdNormCompiler<T>(PhantomData<T>);
 
 impl<T: MetalFloat> Compiler for StdNormCompiler<T> {
     type Output = ();
-    fn compile<To: ToIdsMut>(&self, graph: &mut Graph, mut ids: To) {
+    fn compile<To: ToIdsMut>(&self, graph: &GraphWrapper, mut ids: To) {
         let dev = Device::system_default().unwrap();
         let queue = dev.new_command_queue();
         // Look for the RMSNorm pattern
@@ -583,7 +583,7 @@ pub struct MetalExpCompiler<T: MetalFloat>(PhantomData<T>);
 
 impl<T: MetalFloat> Compiler for MetalExpCompiler<T> {
     type Output = ();
-    fn compile<To: ToIdsMut>(&self, graph: &mut Graph, mut ids: To) {
+    fn compile<To: ToIdsMut>(&self, graph: &GraphWrapper, mut ids: To) {
         let dev = Device::system_default().unwrap();
         let queue = dev.new_command_queue();
         // Look for the exp pattern
@@ -718,7 +718,7 @@ pub struct MetalCosCompiler<T>(PhantomData<T>);
 
 impl<T: MetalFloat> Compiler for MetalCosCompiler<T> {
     type Output = ();
-    fn compile<To: ToIdsMut>(&self, graph: &mut Graph, mut ids: To) {
+    fn compile<To: ToIdsMut>(&self, graph: &GraphWrapper, mut ids: To) {
         let dev = Device::system_default().unwrap();
         let queue = dev.new_command_queue();
         // Look for the cos pattern
@@ -864,7 +864,7 @@ pub struct SoftmaxCompiler<T>(PhantomData<T>);
 
 impl<T: MetalFloat> Compiler for SoftmaxCompiler<T> {
     type Output = ();
-    fn compile<To: ToIdsMut>(&self, graph: &mut Graph, mut ids: To) {
+    fn compile<To: ToIdsMut>(&self, graph: &GraphWrapper, mut ids: To) {
         let dev = Device::system_default().unwrap();
         let queue = dev.new_command_queue();
         // Look for the mean-reduce pattern

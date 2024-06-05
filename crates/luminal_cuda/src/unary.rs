@@ -1,7 +1,7 @@
 use cudarc::driver::{CudaDevice, CudaFunction, DeviceRepr, LaunchAsync, LaunchConfig};
 use num_traits::float::FloatConst;
 use rustc_hash::FxHashMap;
-use std::{any::Any, marker::PhantomData, mem::size_of, sync::Arc};
+use std::{any::Any, cell::RefCell, marker::PhantomData, mem::size_of, rc::Rc, sync::Arc};
 
 use petgraph::visit::EdgeRef;
 
@@ -28,7 +28,7 @@ pub struct CudaMeanReduce<T> {
     device: Arc<CudaDevice>,
     pub dim: usize,
     pub dyn_symbols: Vec<char>,
-    pub dyn_map: *const FxHashMap<char, usize>,
+    pub dyn_map: Rc<RefCell<FxHashMap<char, usize>>>,
     _phantom: PhantomData<T>,
 }
 crate::debug_type!(CudaMeanReduce);
@@ -44,7 +44,7 @@ impl<T: CudaFloat> CudaMeanReduce<T> {
         dev: Arc<CudaDevice>,
         dim: usize,
         shape: ShapeTracker,
-        dyn_map: *const FxHashMap<char, usize>,
+        dyn_map: Rc<RefCell<FxHashMap<char, usize>>>,
     ) -> Self {
         let (idx_exp, valid_exp) = get_idx_valid_exps(shape);
         let (dyn_symbols, rendered) = render_dyn_dim_inputs(&[shape]);
@@ -110,7 +110,11 @@ impl<T: CudaFloat> Operator for CudaMeanReduce<T> {
             back_size.as_kernel_param(),
             dim_size.as_kernel_param(),
         ];
-        input_dyn_dims(&mut params, &self.dyn_symbols, self.dyn_map);
+        input_dyn_dims(
+            &mut params,
+            &self.dyn_symbols,
+            &self.dyn_map.as_ref().borrow(),
+        );
         unsafe {
             self.function
                 .clone()
@@ -127,7 +131,7 @@ pub struct MeanReduceCompiler<T>(PhantomData<T>);
 
 impl<T: CudaFloat> Compiler for MeanReduceCompiler<T> {
     type Output = ();
-    fn compile<To: ToIdsMut>(&self, graph: &mut Graph, mut ids: To) {
+    fn compile<To: ToIdsMut>(&self, graph: &GraphWrapper, mut ids: To) {
         let dev = CudaDevice::new(0).unwrap();
         // Look for the mean-reduce pattern
         // mul(recip(fake_sum_reduce(const_ones)), sum_reduce(x))
@@ -144,25 +148,25 @@ impl<T: CudaFloat> Compiler for MeanReduceCompiler<T> {
                 continue;
             }
             let (sum_reduce, mul) = (s.get(&sum_reduce), s.get(&mul));
-            let dim = graph.get_op::<CudaSumReduce<T>>(sum_reduce).dim;
+            let graph_ref = graph.borrow();
+            let dim = graph_ref.get_op::<CudaSumReduce<T>>(sum_reduce).dim;
             // Insert MeanReduce op
-            let src = graph.get_sources(sum_reduce)[0];
+            let src = graph_ref.get_sources(sum_reduce)[0];
+            let dyn_map = graph_ref.dyn_map.clone();
+            drop(graph_ref);
             let mean_reduce = graph
-                .add_op(CudaMeanReduce::<T>::new(
-                    dev.clone(),
-                    dim,
-                    src.2,
-                    &graph.dyn_map,
-                ))
+                .add_op(CudaMeanReduce::<T>::new(dev.clone(), dim, src.2, dyn_map))
                 .input(src.0, 0, src.2)
                 .finish();
+            let mut graph_mut = graph.borrow_mut();
 
             // Create edges to dests
-            move_outgoing_edge(mul, mean_reduce, graph);
-            remap(mul, mean_reduce, &mut ids, graph);
+            move_outgoing_edge(mul, mean_reduce, &mut graph_mut.graph);
+            remap(mul, mean_reduce, &mut ids, &mut graph_mut);
 
             // Remove the old ops
-            graph.remove_node(mul);
+            graph_mut.remove_node(mul);
+            drop(graph_mut);
             s.try_delete();
         }
     }
@@ -313,7 +317,7 @@ pub struct StdNormCompiler<T>(PhantomData<T>);
 
 impl<T: CudaFloat> Compiler for StdNormCompiler<T> {
     type Output = ();
-    fn compile<To: ToIdsMut>(&self, graph: &mut Graph, mut ids: To) {
+    fn compile<To: ToIdsMut>(&self, graph: &GraphWrapper, mut ids: To) {
         let dev = CudaDevice::new(0).unwrap();
         // Look for the RMSNorm pattern
         // mul(recip(sqrt(add(mean_reduce(mul(x, x)), 1e-6))), x)
@@ -342,13 +346,14 @@ impl<T: CudaFloat> Compiler for StdNormCompiler<T> {
                 // An intermediate node can't be deleted
                 continue;
             }
+            let graph_ref = graph.borrow();
             let ConstantValue::Float(epsilon_num) =
-                graph.get_op::<CudaConstant<T>>(s.get(&eps)).value
+                graph_ref.get_op::<CudaConstant<T>>(s.get(&eps)).value
             else {
                 continue;
             };
-            let (mut x, _, mut sh) = graph.get_sources(s.get(&square))[0];
-            if let Some(mean_reduce) = graph.try_get_op::<CudaMeanReduce<T>>(s.get(&mean)) {
+            let (mut x, _, mut sh) = graph_ref.get_sources(s.get(&square))[0];
+            if let Some(mean_reduce) = graph_ref.try_get_op::<CudaMeanReduce<T>>(s.get(&mean)) {
                 if mean_reduce.dim != sh.len() - 1 {
                     continue;
                 }
@@ -363,7 +368,7 @@ impl<T: CudaFloat> Compiler for StdNormCompiler<T> {
             {
                 continue;
             }
-            if !graph
+            if !graph_ref
                 .get_sources(s.get(&mul))
                 .iter()
                 .any(|(i, _, _)| *i == x)
@@ -372,9 +377,11 @@ impl<T: CudaFloat> Compiler for StdNormCompiler<T> {
             }
 
             // Input must be contiguous
+            let dyn_map = graph_ref.dyn_map.clone();
+            drop(graph_ref);
             if sh.is_reshaped() {
                 x = graph
-                    .add_op(CudaContiguous::<T>::new(sh, dev.clone(), &graph.dyn_map))
+                    .add_op(CudaContiguous::<T>::new(sh, dev.clone(), dyn_map))
                     .input(x, 0, sh)
                     .finish();
                 sh = sh.contiguous();
@@ -387,12 +394,14 @@ impl<T: CudaFloat> Compiler for StdNormCompiler<T> {
                 .finish();
 
             // Create edges to dests
+            let mut graph_mut = graph.borrow_mut();
             let mul = s.get(&mul);
-            move_outgoing_edge(mul, rms_norm, graph);
-            remap(mul, rms_norm, &mut ids, graph);
+            move_outgoing_edge(mul, rms_norm, &mut graph_mut);
+            remap(mul, rms_norm, &mut ids, &mut graph_mut);
 
             // Remove the old ops
-            graph.remove_node(mul);
+            graph_mut.remove_node(mul);
+            drop(graph_mut);
             s.try_delete();
         }
     }
@@ -405,7 +414,7 @@ pub struct CudaExpCompiler<T: CudaFloat>(PhantomData<T>);
 
 impl<T: CudaFloat> Compiler for CudaExpCompiler<T> {
     type Output = ();
-    fn compile<To: ToIdsMut>(&self, graph: &mut Graph, mut ids: To) {
+    fn compile<To: ToIdsMut>(&self, graph: &GraphWrapper, mut ids: To) {
         let dev = CudaDevice::new(0).unwrap();
         // Look for the exp pattern
         // exp2(mul(x, const))
@@ -420,26 +429,32 @@ impl<T: CudaFloat> Compiler for CudaExpCompiler<T> {
                 continue;
             }
 
+            let graph_ref = graph.borrow();
+
             // Insert exp op
-            let (_, _, src_shape) = graph
+            let (_, _, src_shape) = graph_ref
                 .edges_connecting(s.get(&inp), s.get(&mul))
                 .next()
                 .unwrap()
                 .weight()
                 .as_data()
                 .unwrap();
+            let dyn_map = graph_ref.dyn_map.clone();
+            drop(graph_ref);
             let exp = graph
-                .add_op(CudaExp::<T>::new(src_shape, dev.clone(), &graph.dyn_map))
+                .add_op(CudaExp::<T>::new(src_shape, dev.clone(), dyn_map))
                 .input(s.get(&inp), 0, src_shape)
                 .finish();
 
             // Create edges to dests
+            let mut graph_mut = graph.borrow_mut();
             let exp2 = s.get(&exp2);
-            move_outgoing_edge(exp2, exp, graph);
-            remap(exp2, exp, &mut ids, graph);
+            move_outgoing_edge(exp2, exp, &mut graph_mut);
+            remap(exp2, exp, &mut ids, &mut graph_mut);
 
             // Remove the old ops
-            graph.remove_node(exp2);
+            graph_mut.remove_node(exp2);
+            drop(graph_mut);
             s.try_delete();
         }
     }
@@ -453,7 +468,7 @@ pub struct CudaCosCompiler<T>(PhantomData<T>);
 
 impl<T: CudaFloat> Compiler for CudaCosCompiler<T> {
     type Output = ();
-    fn compile<To: ToIdsMut>(&self, graph: &mut Graph, mut ids: To) {
+    fn compile<To: ToIdsMut>(&self, graph: &GraphWrapper, mut ids: To) {
         let dev = CudaDevice::new(0).unwrap();
         // Look for the cos pattern
         // sin(add(mul(const_neg_one, x), const_pi_over_2))
@@ -469,8 +484,10 @@ impl<T: CudaFloat> Compiler for CudaCosCompiler<T> {
                 continue;
             }
 
+            let graph_ref = graph.borrow();
+
             // Insert cos op
-            let shape = graph
+            let shape = graph_ref
                 .edges_directed(s.get(&sub), petgraph::Direction::Incoming)
                 .filter(|e| !e.weight().is_schedule())
                 .find(|e| e.source() != s.get(&const_pi))
@@ -479,18 +496,22 @@ impl<T: CudaFloat> Compiler for CudaCosCompiler<T> {
                 .as_data()
                 .unwrap()
                 .2;
+            let dyn_map = graph_ref.dyn_map.clone();
+            drop(graph_ref);
             let cos = graph
-                .add_op(CudaCos::<T>::new(shape, dev.clone(), &graph.dyn_map))
+                .add_op(CudaCos::<T>::new(shape, dev.clone(), dyn_map))
                 .input(s.get(&inp), 0, shape)
                 .finish();
 
             // Create edges to dests
+            let mut graph_mut = graph.borrow_mut();
             let sin = s.get(&sin);
-            move_outgoing_edge(sin, cos, graph);
-            remap(sin, cos, &mut ids, graph);
+            move_outgoing_edge(sin, cos, &mut graph_mut);
+            remap(sin, cos, &mut ids, &mut graph_mut);
 
             // Remove the old ops
-            graph.remove_node(sin);
+            graph_mut.remove_node(sin);
+            drop(graph_mut);
             s.try_delete();
         }
     }
@@ -608,7 +629,7 @@ pub struct SoftmaxCompiler<T>(PhantomData<T>);
 
 impl<T: CudaFloat> Compiler for SoftmaxCompiler<T> {
     type Output = ();
-    fn compile<To: ToIdsMut>(&self, graph: &mut Graph, mut ids: To) {
+    fn compile<To: ToIdsMut>(&self, graph: &GraphWrapper, mut ids: To) {
         let dev = CudaDevice::new(0).unwrap();
         // Look for the mean-reduce pattern
         // mul(recip(fake_sum_reduce(const_ones)), sum_reduce(x))
@@ -627,19 +648,21 @@ impl<T: CudaFloat> Compiler for SoftmaxCompiler<T> {
                 continue;
             }
             // Insert Softmax op
-            let src = graph.get_sources(s.get(&max_reduce))[0];
+            let src = graph.borrow().get_sources(s.get(&max_reduce))[0];
             let mean_reduce = graph
                 .add_op(CudaSoftmax::<T>::new(dev.clone()))
                 .input(src.0, 0, src.2)
                 .finish();
 
             // Create edges to dests
+            let mut graph_mut = graph.borrow_mut();
             let mul = s.get(&mul);
-            move_outgoing_edge(mul, mean_reduce, graph);
-            remap(mul, mean_reduce, &mut ids, graph);
+            move_outgoing_edge(mul, mean_reduce, &mut graph_mut);
+            remap(mul, mean_reduce, &mut ids, &mut graph_mut);
 
             // Remove the old ops
-            graph.remove_node(mul);
+            graph_mut.remove_node(mul);
+            drop(graph_mut);
             s.try_delete();
         }
     }

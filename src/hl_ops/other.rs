@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::{path::Path, rc::Rc};
 
 use colored::Colorize;
 use itertools::Itertools;
@@ -21,10 +21,11 @@ impl<S: Shape> GraphTensor<S> {
         self = self.contiguous();
 
         // Pool
-        let mut pooled = self.pool_last_dim::<()>(orig_length, 1, 0);
+        let mut pooled = self.clone().pool_last_dim::<()>(orig_length, 1, 0);
         // Sum Reduce along new dimension
         let final_id = self
             .graph()
+            .unwrap()
             .add_op(op::SumReduce(axis))
             .input(pooled.id, 0, pooled.shape)
             .finish();
@@ -69,31 +70,35 @@ impl From<&Expression> for ConstantValue {
     }
 }
 
-impl Graph {
+impl GraphWrapper {
     /// A scalar constant
-    pub fn constant(&mut self, i: impl Into<ConstantValue>) -> GraphTensor<R0> {
+    pub fn constant(&self, i: impl Into<ConstantValue>) -> GraphTensor<R0> {
+        let dyn_map = self.borrow().dyn_map.clone();
+        let graph_ref = Rc::downgrade(&self.0);
         GraphTensor::from_id(
-            self.add_op(Constant(i.into(), &self.dyn_map)).finish(),
+            self.add_op(Constant(i.into(), dyn_map)).finish(),
             ShapeTracker::new(&[]),
-            self,
+            graph_ref,
         )
     }
 
     /// A scalar constant evaluated from an expression at runtime
-    pub fn constant_expr<E: Into<BigExpression>>(&mut self, expr: E) -> GraphTensor<R0> {
+    pub fn constant_expr<E: Into<BigExpression>>(&self, expr: E) -> GraphTensor<R0> {
+        let dyn_map = self.borrow().dyn_map.clone();
+        let graph_ref = Rc::downgrade(&self.0);
         GraphTensor::from_id(
             self.add_op(Constant(
                 ConstantValue::Expression(expr.into().simplify()),
-                &self.dyn_map,
+                dyn_map,
             ))
             .finish(),
             ShapeTracker::new(&[]),
-            self,
+            graph_ref,
         )
     }
 
     /// ARange from 0 to N
-    pub fn arange<N: Dimension>(&mut self) -> GraphTensor<(N,)> {
+    pub fn arange<N: Dimension>(&self) -> GraphTensor<(N,)> {
         if N::size().to_usize().map(|i| i == 1).unwrap_or_default() {
             // Single number ARange is just 0
             self.constant(0.).expand()
@@ -105,7 +110,7 @@ impl Graph {
     /// Lower left-hand triangle of 1s. Currently required to be square
     ///
     /// Same API as https://pytorch.org/docs/stable/generated/torch.tril
-    pub fn tril<S: Dimension>(&mut self, diagonal: i32) -> GraphTensor<(S, S)> {
+    pub fn tril<S: Dimension>(&self, diagonal: i32) -> GraphTensor<(S, S)> {
         let horizontal = self.arange::<S>().expand::<(S, S), Axis<0>>();
         let vertical = self.arange::<S>().expand::<(S, S), Axis<1>>();
 
@@ -115,7 +120,7 @@ impl Graph {
     /// Upper right-hand triangle of 1s
     ///
     /// Same API as https://pytorch.org/docs/stable/generated/torch.triu
-    pub fn triu<S: Dimension>(&mut self, diagonal: i32) -> GraphTensor<(S, S)> {
+    pub fn triu<S: Dimension>(&self, diagonal: i32) -> GraphTensor<(S, S)> {
         let horizontal = self.arange::<S>().expand::<(S, S), Axis<0>>();
         let vertical = self.arange::<S>().expand::<(S, S), Axis<1>>();
 
@@ -128,6 +133,7 @@ impl<S: Dimension, const DIM: usize> GraphTensor<(S, Const<DIM>)> {
     pub fn gather<B: Dimension>(self, indexes: GraphTensor<(B,)>) -> GraphTensor<(B, Const<DIM>)> {
         let one_hot = indexes
             .graph()
+            .unwrap()
             .arange::<S>()
             .expand::<(B, S), _>()
             .equals(indexes.expand());
@@ -141,6 +147,7 @@ impl<S: Shape> GraphTensor<S> {
         let message = message.to_string();
         let id = self
             .graph()
+            .unwrap()
             .add_op(op::Function(
                 "Print".to_string(),
                 Box::new(move |inp| {
@@ -162,8 +169,8 @@ impl<S: Shape> GraphTensor<S> {
             ))
             .input(self.id, 0, self.shape)
             .finish();
-        self.graph().no_delete.insert(id);
-        *self
+        self.graph().unwrap().borrow_mut().no_delete.insert(id);
+        self.clone()
     }
 
     /// Check the tensor value against a binary file
@@ -171,6 +178,7 @@ impl<S: Shape> GraphTensor<S> {
         let path = file.as_ref().to_owned();
         let id = self
             .graph()
+            .unwrap()
             .add_op(op::Function(
                 "Diff".to_string(),
                 Box::new(move |mut inp| {
@@ -331,8 +339,8 @@ impl<S: Shape> GraphTensor<S> {
             ))
             .input(self.id, 0, self.shape)
             .finish();
-        self.graph().no_delete.insert(id);
-        *self
+        self.graph().unwrap().borrow_mut().no_delete.insert(id);
+        self.clone()
     }
 }
 
@@ -341,7 +349,7 @@ mod tests {
     crate::test_imports!();
     #[test]
     fn test_arange() {
-        let mut cx = Graph::new();
+        let cx = Graph::new();
 
         let arange = cx.arange::<LConst<10>>().retrieve();
         cx.execute();
@@ -351,7 +359,7 @@ mod tests {
 
     #[test]
     fn test_cumprod() {
-        let mut cx = Graph::new();
+        let cx = Graph::new();
 
         let a = cx.tensor::<R1<3>>().set(vec![3., 2., 5.]);
         let b = a.cumprod_last_dim().retrieve();
@@ -362,7 +370,7 @@ mod tests {
 
     #[test]
     fn test_dyn_arange() {
-        let mut cx = Graph::new();
+        let cx = Graph::new();
 
         let arange = cx.arange::<Dyn<'a'>>().retrieve();
         cx.set_dyn_dim('a', 6);
@@ -374,7 +382,7 @@ mod tests {
 
     #[test]
     fn test_tril() {
-        let mut cx = Graph::new();
+        let cx = Graph::new();
 
         let triangle = cx.tril::<LConst<5>>(1).retrieve();
 
@@ -397,7 +405,7 @@ mod tests {
 
     #[test]
     fn test_triu() {
-        let mut cx = Graph::new();
+        let cx = Graph::new();
 
         let a = cx.triu::<LConst<3>>(-1).retrieve();
         let b = cx.triu::<LConst<3>>(0).retrieve();

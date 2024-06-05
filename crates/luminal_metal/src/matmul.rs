@@ -204,7 +204,7 @@ pub struct MetalMatMulCompiler<T>(PhantomData<T>);
 
 impl<T: MetalFloat> Compiler for MetalMatMulCompiler<T> {
     type Output = ();
-    fn compile<To: ToIdsMut>(&self, graph: &mut Graph, mut ids: To) {
+    fn compile<To: ToIdsMut>(&self, graph: &GraphWrapper, mut ids: To) {
         let dev = Device::system_default().unwrap();
         let queue = dev.new_command_queue();
 

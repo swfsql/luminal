@@ -38,16 +38,17 @@ fn main() {
     let now = Instant::now();
 
     // Set up graph
-    let mut cx = Graph::new();
+    let cx = Graph::new();
     let mut input = cx.named_tensor::<(Const<1>, Dyn<'s'>)>("Input");
     let mut cache_src: Vec<KVCache<Const<1>, Dyn<'p'>>> = (0..model::NUM_LAYERS)
         .map(|_| (cx.named_tensor("Key Cache"), cx.named_tensor("Value Cache")))
         .collect();
     cache_src.set_dyn(vec![], &[1, model::N_KV_HEADS, 0, model::HEAD_DIM]);
-    let model = model::Llama::initialize(&mut cx);
+    let model = model::Llama::initialize(&cx);
     let mut model_weights = params(&model);
     cx.keep_tensors(&model_weights);
-    let (logits, mut cache_dest) = model.forward((input, &cache_src, PhantomData::<Dyn<'t'>>));
+    let (logits, mut cache_dest) =
+        model.forward((input.clone(), &cache_src, PhantomData::<Dyn<'t'>>));
     let mut logits = logits
         .slice((.., (Expression::from('s') - 1).., ..))
         .retrieve();
@@ -62,7 +63,7 @@ fn main() {
     #[cfg(any(feature = "metal", feature = "cuda"))]
     let q_weights = loader::q8_load("setup/llama3-8b.gguf", &model, &mut cx);
     #[cfg(all(not(feature = "metal"), not(feature = "cuda")))]
-    loader::q8_load("setup/llama3-8b.gguf", &model, &mut cx);
+    loader::q8_load("setup/llama3-8b.gguf", &model, &cx);
 
     cx.compile(
         (
@@ -93,16 +94,16 @@ fn main() {
     print!("Loading model");
     io::stdout().flush().unwrap();
     let now = Instant::now();
-    input.set_dyn(vec![1.], &[1, 1]);
+    input.clone().set_dyn(vec![1.], &[1, 1]);
     cx.set_dyn_dim('t', 1);
     cx.execute();
     logits.drop();
-    transfer_data_same_graph(&cache_dest, &cache_src, &mut cx);
+    transfer_data_same_graph(&cache_dest, &cache_src, &cx);
     println!("\t\t - {}ms", now.elapsed().as_millis());
 
     // Now that weights are loaded, delete the loading nodes so they don't run again
-    delete_inputs(&cache_src, &mut cx);
-    delete_inputs(&downstream(model_weights, &cx), &mut cx);
+    delete_inputs(&cache_src, &cx);
+    delete_inputs(downstream(model_weights, &cx), &cx);
 
     // Run prompt processing pass
     let mut input_ids = tokenizer
@@ -111,7 +112,7 @@ fn main() {
         .get_ids()
         .to_vec();
     input_ids.insert(0, 1);
-    input.set_dyn(
+    input.clone().set_dyn(
         input_ids.iter().map(|i| *i as f32).collect::<Vec<_>>(),
         &[1, input_ids.len()],
     );
@@ -138,13 +139,15 @@ fn main() {
     io::stdout().flush().unwrap();
 
     // Swap caches
-    transfer_data_same_graph(&cache_dest, &cache_src, &mut cx);
+    transfer_data_same_graph(&cache_dest, &cache_src, &cx);
 
     // Decode loop
     let start_decode = std::time::Instant::now();
     let mut prev_output_len = 0;
     for _ in 0..cli_args.gen_tokens {
-        input.set_dyn(vec![*output_ids.last().unwrap() as f32], &[1, 1]);
+        input
+            .clone()
+            .set_dyn(vec![*output_ids.last().unwrap() as f32], &[1, 1]);
         cx.set_dyn_dim('p', input_ids.len() + output_ids.len() - 1);
         cx.set_dyn_dim('t', input_ids.len() + output_ids.len());
         cx.execute();
@@ -165,7 +168,7 @@ fn main() {
         prev_output_len = current_output.len();
 
         // Swap caches
-        transfer_data_same_graph(&cache_dest, &cache_src, &mut cx);
+        transfer_data_same_graph(&cache_dest, &cache_src, &cx);
     }
 
     println!();

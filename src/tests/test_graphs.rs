@@ -4,7 +4,7 @@ use crate::prelude::*;
 
 use super::random_vec_rng;
 
-pub fn matmul() -> (Graph, Vec<GraphTensor<()>>) {
+pub fn matmul() -> (GraphWrapper, Vec<GraphTensor<()>>) {
     let mut rng = StdRng::seed_from_u64(0);
     let mut cx = Graph::new();
     let a = cx
@@ -15,7 +15,7 @@ pub fn matmul() -> (Graph, Vec<GraphTensor<()>>) {
     (cx, vec![c.no_shape()])
 }
 
-pub fn batch_matmul() -> (Graph, Vec<GraphTensor<()>>) {
+pub fn batch_matmul() -> (GraphWrapper, Vec<GraphTensor<()>>) {
     let mut rng = StdRng::seed_from_u64(0);
     let mut cx = Graph::new();
     let a = cx

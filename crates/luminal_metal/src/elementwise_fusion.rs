@@ -68,7 +68,7 @@ fn is_more_than_one_view(
 
 impl<T: MetalFloat> Compiler for ElementwiseFusionCompiler<T> {
     type Output = ();
-    fn compile<To: ToIdsMut>(&self, graph: &mut Graph, mut ids: To) {
+    fn compile<To: ToIdsMut>(&self, graph: &GraphWrapper, mut ids: To) {
         let device = Device::system_default().unwrap();
         let queue = device.new_command_queue();
         // Track fused ops to compile later
@@ -835,7 +835,7 @@ mod tests {
             }
         }
         impl<const I: usize, const H: usize> InitModule for Mlp<I, H> {
-            fn initialize(cx: &mut Graph) -> Self {
+            fn initialize(cx: &GraphWrapper) -> Self {
                 Self {
                     gate_proj: InitModule::initialize(cx),
                     up_proj: InitModule::initialize(cx),
@@ -962,7 +962,7 @@ mod tests {
         }
 
         impl InitModule for SelfAttention {
-            fn initialize(cx: &mut Graph) -> Self {
+            fn initialize(cx: &GraphWrapper) -> Self {
                 Self {
                     q_proj: cx
                         .named_tensor("Q Proj")
@@ -1033,7 +1033,7 @@ mod tests {
         }
 
         impl InitModule for TransformerBlock {
-            fn initialize(cx: &mut Graph) -> Self {
+            fn initialize(cx: &GraphWrapper) -> Self {
                 Self {
                     attention: InitModule::initialize(cx),
                     attention_norm: LayerNorm::new(false, false, false, 1e-5, cx),
@@ -1085,7 +1085,7 @@ mod tests {
         }
 
         impl InitModule for MistralLM {
-            fn initialize(cx: &mut Graph) -> Self {
+            fn initialize(cx: &GraphWrapper) -> Self {
                 Self {
                     norm: LayerNorm::new(false, false, false, 1e-5, cx),
                     layers: (0..NUM_LAYERS)

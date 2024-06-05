@@ -40,7 +40,7 @@ pub struct SubtractionCompiler;
 
 impl Compiler for SubtractionCompiler {
     type Output = ();
-    fn compile<To: ToIdsMut>(&self, graph: &mut Graph, _: To) {
+    fn compile<To: ToIdsMut>(&self, graph: &GraphWrapper, _: To) {
         let (lhs, rhs) = (node(), node());
         let mul = binary::<Mul>(rhs.clone(), super::constant(-1.));
         let add = binary::<Add>(lhs.clone(), mul.clone());
@@ -52,19 +52,20 @@ impl Compiler for SubtractionCompiler {
                 continue;
             }
             let add = s.get(&add);
-            let (a, a_edge) = graph
+            let graph_ref = graph.borrow();
+            let (a, a_edge) = graph_ref
                 .graph
                 .edges_connecting(s.get(&lhs), add)
                 .next()
                 .map(|e| (e.source(), e.weight().as_data().unwrap()))
                 .unwrap();
-            let (b, b_edge) = graph
+            let (b, b_edge) = graph_ref
                 .graph
                 .edges_connecting(s.get(&rhs), s.get(&mul))
                 .next()
                 .map(|e| (e.source(), e.weight().as_data().unwrap()))
                 .unwrap();
-            let b_final_shape = graph
+            let b_final_shape = graph_ref
                 .graph
                 .edges_connecting(s.get(&mul), add)
                 .next()
@@ -76,14 +77,18 @@ impl Compiler for SubtractionCompiler {
             if b_final_shape.is_reshaped() {
                 continue;
             }
+            drop(graph_ref);
             let sub = graph
                 .add_op(Sub)
                 .input(a, a_edge.1, a_edge.2)
                 .input(b, b_edge.1, b_edge.2)
                 .finish();
-            move_outgoing_edge(add, sub, &mut graph.graph);
 
-            graph.graph.remove_node(add);
+            let mut graph_mut = graph.borrow_mut();
+            move_outgoing_edge(add, sub, &mut graph_mut.graph);
+
+            graph_mut.graph.remove_node(add);
+            drop(graph_mut);
             s.try_delete();
         }
     }
@@ -124,7 +129,7 @@ pub struct EqualCompiler;
 
 impl Compiler for EqualCompiler {
     type Output = ();
-    fn compile<To: ToIdsMut>(&self, graph: &mut Graph, _: To) {
+    fn compile<To: ToIdsMut>(&self, graph: &GraphWrapper, _: To) {
         let one = super::constant(1.);
         let (lhs, rhs) = (node(), node());
         let lt1 = binary::<LessThan>(lhs.clone(), rhs.clone());
@@ -138,7 +143,8 @@ impl Compiler for EqualCompiler {
             }
             let (lhs, rhs) = (s.get(&lhs), s.get(&rhs));
             let eq = s.get(&eq);
-            let a_edge = graph
+            let graph_ref = graph.borrow();
+            let a_edge = graph_ref
                 .graph
                 .edges_connecting(lhs, s.get(&lt1))
                 .next()
@@ -146,7 +152,7 @@ impl Compiler for EqualCompiler {
                 .weight()
                 .as_data()
                 .unwrap();
-            let b_edge = graph
+            let b_edge = graph_ref
                 .graph
                 .edges_connecting(rhs, s.get(&lt1))
                 .next()
@@ -154,14 +160,17 @@ impl Compiler for EqualCompiler {
                 .weight()
                 .as_data()
                 .unwrap();
+            drop(graph_ref);
             let equals = graph
                 .add_op(Equal)
                 .input(lhs, a_edge.1, a_edge.2)
                 .input(rhs, b_edge.1, b_edge.2)
                 .finish();
-            move_outgoing_edge(eq, equals, &mut graph.graph);
+            let mut graph_mut = graph.borrow_mut();
+            move_outgoing_edge(eq, equals, &mut graph_mut.graph);
 
-            graph.graph.remove_node(eq);
+            graph_mut.graph.remove_node(eq);
+            drop(graph_mut);
             s.try_delete();
         }
     }
@@ -195,7 +204,7 @@ pub struct GatherCompiler;
 
 impl Compiler for GatherCompiler {
     type Output = ();
-    fn compile<To: ToIdsMut>(&self, graph: &mut Graph, _: To) {
+    fn compile<To: ToIdsMut>(&self, graph: &GraphWrapper, _: To) {
         let indexes = node();
         let eq = binary::<Equal>(indexes.clone(), op::<ARange>());
         let embedding = node();
@@ -206,7 +215,8 @@ impl Compiler for GatherCompiler {
             if s.check_no_delete(&[embedding.id]) {
                 continue;
             }
-            let emb_shape = graph
+            let graph_ref = graph.borrow();
+            let emb_shape = graph_ref
                 .edges_connecting(s.get(&embedding), s.get(&mul))
                 .next()
                 .unwrap()
@@ -214,7 +224,7 @@ impl Compiler for GatherCompiler {
                 .as_data()
                 .unwrap()
                 .2;
-            let index_shape = graph
+            let index_shape = graph_ref
                 .edges_connecting(s.get(&indexes), s.get(&eq))
                 .next()
                 .unwrap()
@@ -222,7 +232,7 @@ impl Compiler for GatherCompiler {
                 .as_data()
                 .unwrap()
                 .2;
-            let embed_dim = graph
+            let embed_dim = graph_ref
                 .graph
                 .edges_connecting(s.get(&embedding), s.get(&mul))
                 .next()
@@ -235,18 +245,21 @@ impl Compiler for GatherCompiler {
                 .to_usize()
                 .unwrap();
 
+            drop(graph_ref);
             let gather = graph
                 .add_op(Gather { embed_dim })
                 .input(s.get(&indexes), 0, index_shape)
                 .input(s.get(&embedding), 0, emb_shape)
                 .finish();
-            move_outgoing_edge(s.get(&sum_reduce), gather, &mut graph.graph);
-            graph.remove_node(s.get(&sum_reduce));
+            let mut graph_mut = graph.borrow_mut();
+            move_outgoing_edge(s.get(&sum_reduce), gather, &mut graph_mut.graph);
+            graph_mut.remove_node(s.get(&sum_reduce));
+            drop(graph_mut);
             s.try_delete();
         }
     }
 }
 
-fn get_vec<'a>(tensor: &'a InputTensor<'a>) -> &'a Vec<f32> {
+fn get_vec(tensor: &InputTensor) -> &Vec<f32> {
     tensor.borrowed().downcast_ref::<Vec<f32>>().unwrap()
 }

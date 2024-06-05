@@ -1,6 +1,13 @@
 // Lots of utilities used by compilers
 
-use std::{any::TypeId, borrow::Borrow, collections::HashSet, fmt::Debug, sync::Arc};
+use std::{
+    any::TypeId,
+    cell::RefCell,
+    collections::HashSet,
+    fmt::Debug,
+    rc::{Rc, Weak},
+    sync::Arc,
+};
 
 use colored::Colorize;
 use itertools::Itertools;
@@ -175,12 +182,12 @@ tuple_impls!(
 pub trait Compiler {
     type Output;
     /// Run a compilation pass
-    fn compile<T: ToIdsMut>(&self, graph: &mut Graph, ids: T) -> Self::Output;
+    fn compile<T: ToIdsMut>(&self, graph: &GraphWrapper, ids: T) -> Self::Output;
 }
 
 impl Compiler for () {
     type Output = ();
-    fn compile<T: ToIdsMut>(&self, _: &mut Graph, _: T) {}
+    fn compile<T: ToIdsMut>(&self, _: &GraphWrapper, _: T) {}
 }
 
 /// Wrap this around a compiler to rerun the compiler until it doesn't change the graph anymore
@@ -189,16 +196,17 @@ pub struct Looped<C: Compiler + Debug>(C);
 
 impl<C: Compiler + Debug> Compiler for Looped<C> {
     type Output = ();
-    fn compile<T: ToIdsMut>(&self, graph: &mut Graph, mut remap: T) {
+    fn compile<T: ToIdsMut>(&self, graph: &GraphWrapper, mut remap: T) {
         graph.toposort();
-        let mut linearized = graph.linearized_graph.clone();
+        let graph_ref = graph.borrow();
+        let mut linearized = graph_ref.linearized_graph.clone();
         loop {
             self.0.compile(graph, &mut remap);
             graph.toposort();
-            if linearized == graph.linearized_graph {
+            if linearized == graph_ref.linearized_graph {
                 break;
             }
-            linearized.clone_from(&graph.linearized_graph);
+            linearized.clone_from(&graph_ref.linearized_graph);
         }
     }
 }
@@ -215,7 +223,7 @@ pub struct Timed<C: Compiler + Debug>(pub C);
 
 impl<C: Compiler + Debug> Compiler for Timed<C> {
     type Output = ();
-    fn compile<T: ToIdsMut>(&self, graph: &mut Graph, remap: T) {
+    fn compile<T: ToIdsMut>(&self, graph: &GraphWrapper, remap: T) {
         let compiler_name = format!("{:?}", self.0).bold();
         println!("Starting {compiler_name}");
         let start = std::time::Instant::now();
@@ -251,7 +259,7 @@ macro_rules! tuple_impls {
             Compiler, )+
         > Compiler for ($($name,)+) {
             type Output = ( $($name::Output, )+ );
-            fn compile<T: ToIdsMut>(&self, graph: &mut Graph, mut remap: T) -> Self::Output {
+            fn compile<T: ToIdsMut>(&self, graph: &GraphWrapper, mut remap: T) -> Self::Output {
                 ( $(self.$idx.compile(graph, &mut remap), )+ )
             }
         }
@@ -317,36 +325,80 @@ tuple_impls!(
 
 // Helpers
 
-impl Graph {
+impl GraphWrapper {
     /// Add op on the graph, and get back a NewOp
     ///
     /// ```rust
     /// use luminal::prelude::*;
-    /// let mut cx = Graph::new();
+    /// use std::rc::Rc;
+    /// let mut cx = GraphWrapper::default();
     /// let a = cx.tensor::<R1<3>>();
     /// let b_id = cx
     ///     .add_op(luminal::op::Mul)
     ///     .input(a.id, 0, a.shape)
     ///     .finish();
-    /// let b = GraphTensor::<R1<3>>::from_id(b_id, a.shape, a.graph());
+    /// let b = GraphTensor::<R1<3>>::from_id(b_id, a.shape, Rc::downgrade(&a.graph().unwrap().0));
     /// ```
-    pub fn add_op<O: Operator + 'static>(&mut self, op: O) -> NewOp {
-        self.linearized_graph = None;
+    pub fn add_op<O: Operator + 'static>(&self, op: O) -> NewOp {
+        let graph_ref = Rc::downgrade(&self.0);
+        let mut _self = self.borrow_mut();
+        _self.linearized_graph = None;
         NewOp {
-            new_op_id: self.graph.add_node(Box::new(op)),
-            graph_ref: self,
+            new_op_id: _self.graph.add_node(Box::new(op)),
+            graph_ref,
             num_srcs: 0,
         }
     }
     /// Add op on the graph, and get back a NewOp. Just like add_op, except a boxed op is expected.
-    pub fn add_boxed_op(&mut self, op: Box<dyn Operator + 'static>) -> NewOp {
-        self.linearized_graph = None;
+    pub fn add_boxed_op(&self, op: Box<dyn Operator + 'static>) -> NewOp {
+        let mut _self = self.borrow_mut();
+        _self.linearized_graph = None;
         NewOp {
-            new_op_id: self.graph.add_node(op),
-            graph_ref: self,
+            new_op_id: _self.graph.add_node(op),
+            graph_ref: Rc::downgrade(&self.0),
             num_srcs: 0,
         }
     }
+
+    /// Convert to debug-viewable graph
+    #[allow(dead_code)]
+    fn debug_graph(
+        &self,
+        show_shapes: bool,
+    ) -> (
+        StableGraph<String, u8>,
+        Vec<EdgeIndex>,
+        FxHashMap<NodeIndex, NodeIndex>,
+    ) {
+        self.borrow().debug_graph(show_shapes)
+    }
+
+    pub fn check_node_type<T: Operator + 'static>(&self, node: NodeIndex) -> bool {
+        self.borrow().check_node_type::<T>(node)
+    }
+
+    pub fn display(&self) {
+        self.borrow().display()
+    }
+
+    pub fn display_shapes(&self) {
+        self.borrow().display_shapes()
+    }
+
+    pub fn display_set<T: ToIds>(&self, set: T) {
+        self.borrow().display_set(set)
+    }
+
+    pub fn borrow(&self) -> std::cell::Ref<Graph> {
+        self.as_ref().borrow()
+    }
+
+    pub fn borrow_mut(&self) -> std::cell::RefMut<Graph> {
+        self.as_ref().borrow_mut()
+    }
+}
+
+impl Graph {
     /// Create a schedule dependency between a and b
     pub fn add_schedule_dependency(&mut self, a: NodeIndex, b: NodeIndex) {
         self.graph.add_edge(a, b, Dependency::Schedule);
@@ -539,27 +591,32 @@ pub fn display_graph(
     }
 }
 
-pub struct NewOp<'a> {
+pub struct NewOp {
     new_op_id: NodeIndex,
-    graph_ref: &'a mut Graph,
+    graph_ref: Weak<RefCell<Graph>>,
     num_srcs: u8,
 }
 
-impl<'a> NewOp<'a> {
+impl NewOp {
     pub fn finish(self) -> NodeIndex {
         self.new_op_id
     }
 
     pub fn input(mut self, id: NodeIndex, from_output: u8, shape: ShapeTracker) -> Self {
-        self.graph_ref.graph.add_edge(
-            id,
-            self.new_op_id,
-            Dependency::Data {
-                input_order: self.num_srcs,
-                output_order: from_output,
-                shape,
-            },
-        );
+        self.graph_ref
+            .upgrade()
+            .unwrap()
+            .borrow_mut()
+            .graph
+            .add_edge(
+                id,
+                self.new_op_id,
+                Dependency::Data {
+                    input_order: self.num_srcs,
+                    output_order: from_output,
+                    shape,
+                },
+            );
         self.num_srcs += 1;
         self
     }
@@ -615,7 +672,7 @@ pub fn move_incoming_edge<N, E: Clone>(
 pub struct GraphSearch {
     current: FxHashMap<Uuid, NodeIndex>,
     selector: StableGraph<(Uuid, SelectOp), Option<u8>>,
-    graph: *mut Graph,
+    graph: Weak<RefCell<Graph>>,
     to_return: Vec<FxHashMap<NodeIndex, NodeIndex>>,
     returned_anchors: HashSet<NodeIndex>,
     anchor: NodeIndex,
@@ -625,18 +682,19 @@ pub struct GraphSearch {
 impl GraphSearch {
     pub fn next_match(&mut self) -> bool {
         // Look through graph for pattern from selector
-        let graph = unsafe { self.graph.as_mut().unwrap() };
+        let graph = self.graph.upgrade().unwrap();
+        let mut graph_mut = graph.as_ref().borrow_mut();
 
         if self.to_return.is_empty() {
             // Replenish to_return
             let (_, select_op) = self.selector.node_weight(self.anchor).unwrap();
-            for node in graph.graph.node_indices().collect::<Vec<_>>() {
+            for node in graph_mut.graph.node_indices().collect::<Vec<_>>() {
                 if !self.returned_anchors.contains(&node)
-                    && test_node(select_op, &mut graph.graph, node)
+                    && test_node(select_op, &mut graph_mut.graph, node)
                 {
                     // Backtrack to check if this is a match
                     if let Some(mapping) =
-                        backtrack_match(self.anchor, &self.selector, node, &mut graph.graph)
+                        backtrack_match(self.anchor, &self.selector, node, &mut graph_mut.graph)
                     {
                         self.to_return.push(mapping);
                     }
@@ -664,21 +722,21 @@ impl GraphSearch {
         self.returned_anchors.clear();
     }
     pub fn check_no_delete(&self, exclude: &[Uuid]) -> bool {
-        let graph = unsafe { self.graph.as_ref().unwrap() };
+        let graph = self.graph.upgrade().unwrap();
         self.current
             .iter()
             .filter(|(k, _)| !exclude.contains(k))
-            .any(|(_, v)| graph.no_delete.contains(v))
+            .any(|(_, v)| graph.borrow().no_delete.contains(v))
     }
-    pub fn get<T: Borrow<SelectGraph>>(&self, node: T) -> NodeIndex {
+    pub fn get<T: std::borrow::Borrow<SelectGraph>>(&self, node: T) -> NodeIndex {
         *self.current.get(&node.borrow().id).unwrap()
     }
     pub fn try_delete(&self) {
-        let graph = unsafe { self.graph.as_mut().unwrap() };
+        let graph = self.graph.upgrade().unwrap();
         for node in toposort(&self.selector, None).unwrap().into_iter().rev() {
             let id = self.selector.node_weight(node).unwrap().0;
             let node = self.current[&id];
-            graph.safe_remove_node(node, 0);
+            graph.borrow_mut().safe_remove_node(node, 0);
         }
     }
 }
@@ -919,13 +977,13 @@ impl SelectGraph {
         self
     }
 
-    pub fn search(self, graph: &mut Graph) -> GraphSearch {
+    pub fn search(self, graph: &GraphWrapper) -> GraphSearch {
         let anchor = *toposort(&self.graph, None).unwrap().last().unwrap();
         GraphSearch {
             current: FxHashMap::default(),
             to_return: vec![],
             selector: self.graph,
-            graph,
+            graph: Rc::downgrade(&graph.0),
             returned_anchors: HashSet::new(),
             anchor,
             matched: false,

@@ -11,7 +11,7 @@ pub struct LayerNorm<const DIM: usize> {
 }
 
 impl<const DIM: usize> LayerNorm<DIM> {
-    pub fn new(weight: bool, bias: bool, mean_norm: bool, epsilon: f32, cx: &mut Graph) -> Self {
+    pub fn new(weight: bool, bias: bool, mean_norm: bool, epsilon: f32, cx: &GraphWrapper) -> Self {
         Self {
             weight: if weight {
                 Some(cx.named_tensor("LayerNorm Weight"))
@@ -27,7 +27,13 @@ impl<const DIM: usize> LayerNorm<DIM> {
             epsilon,
         }
     }
-    pub fn init(weight: bool, bias: bool, mean_norm: bool, epsilon: f32, cx: &mut Graph) -> Self {
+    pub fn init(
+        weight: bool,
+        bias: bool,
+        mean_norm: bool,
+        epsilon: f32,
+        cx: &GraphWrapper,
+    ) -> Self {
         // Init weight as uniform(-1, 1)
         let mut rng = thread_rng();
         Self {
@@ -63,10 +69,10 @@ where
             input = input.mean_norm::<S::LastAxis>();
         }
         input = input.std_norm(self.epsilon);
-        if let Some(w) = self.weight {
+        if let Some(w) = self.weight.clone() {
             input *= w.expand();
         }
-        if let Some(b) = self.bias {
+        if let Some(b) = self.bias.clone() {
             input += b.expand();
         }
         input
@@ -75,10 +81,10 @@ where
 
 impl<const DIM: usize> SerializeModule for LayerNorm<DIM> {
     fn serialize(&self, s: &mut Serializer) {
-        if let Some(w) = self.weight {
+        if let Some(w) = self.weight.clone() {
             s.tensor("weight", w);
         }
-        if let Some(b) = self.bias {
+        if let Some(b) = self.bias.clone() {
             s.tensor("bias", b);
         }
     }

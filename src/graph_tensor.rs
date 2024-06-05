@@ -1,6 +1,8 @@
 use crate::prelude::*;
+use std::cell::RefCell;
 use std::fmt::Debug;
 use std::marker::PhantomData;
+use std::rc::Weak;
 
 use petgraph::graph::NodeIndex;
 
@@ -15,17 +17,17 @@ use petgraph::graph::NodeIndex;
 /// let c: GraphTensor<R1<3>> = a + b;
 /// // The graph `cx` now has `a` and `b` loading nodes, and an add node resulting in `c`
 /// ```
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub struct GraphTensor<S: Shape> {
     pub id: NodeIndex,
-    pub graph_ref: *mut Graph,
+    pub graph_ref: Weak<RefCell<Graph>>,
     pub(crate) _phantom: PhantomData<S>,
     pub shape: ShapeTracker,
 }
 
 impl<S: Shape> GraphTensor<S> {
     /// Create a GraphTensor from a NodeIndex
-    pub fn from_id(id: NodeIndex, shape: ShapeTracker, graph_ref: *mut Graph) -> Self {
+    pub fn from_id(id: NodeIndex, shape: ShapeTracker, graph_ref: Weak<RefCell<Graph>>) -> Self {
         Self {
             id,
             graph_ref,
@@ -35,27 +37,31 @@ impl<S: Shape> GraphTensor<S> {
     }
 
     /// Mark this tensor to not be deleted
-    pub fn keep(self) -> Self {
-        self.graph().keep_tensors(self.id);
+    pub fn keep(&mut self) -> &mut Self {
+        self.graph().unwrap().keep_tensors(self.id);
         self
     }
 
     /// Mark this tensor to be retrieved later
-    pub fn retrieve(self) -> Self {
+    pub fn retrieve(&mut self) -> &mut Self {
         self.keep();
-        self.graph().to_retrieve.insert(self.id, (0, self.shape));
+        self.graph()
+            .unwrap()
+            .borrow_mut()
+            .to_retrieve
+            .insert(self.id, (0, self.shape));
         self
     }
 
     /// Remove this tensor's data from the graph.
     pub fn drop(&self) {
-        self.graph().drop_tensors(self.id);
+        self.graph().unwrap().drop_tensors(self.id);
     }
 
     /// Get a mutable reference to the graph this tensor belongs to
     #[allow(clippy::mut_from_ref)]
-    pub fn graph(&self) -> &mut Graph {
-        unsafe { self.graph_ref.as_mut().unwrap() }
+    pub fn graph(&self) -> Option<GraphWrapper> {
+        self.graph_ref.upgrade().map(GraphWrapper)
     }
 
     /// Set the value of the tensor, with dynamic dimensions.
@@ -73,19 +79,27 @@ impl<S: Shape> GraphTensor<S> {
             shape.len(),
             "Number of dimensions do not match!"
         );
+        let graph = self.graph().unwrap();
+        let mut graph_mut = graph.borrow_mut();
+        let mut dyn_map_mut = graph_mut.dyn_map.as_ref().borrow_mut();
         for (d, s) in S::realized_shape().iter().zip(shape.iter()) {
             if let Some(c) = d.to_symbols().pop() {
-                self.graph().dyn_map.insert(c, *s);
+                dyn_map_mut.insert(c, *s);
             }
         }
-        self.graph().get_op_mut::<Function>(self.id).1 =
+        drop(dyn_map_mut);
+        graph_mut.get_op_mut::<Function>(self.id).1 =
             Box::new(move |_| vec![Tensor::new(data.to_owned())]);
         self
     }
 
     /// Set the name of a tensor
     pub fn set_name(&self, name: &str) {
-        self.graph().get_op_mut::<Function>(self.id).0 = name.to_string();
+        self.graph()
+            .unwrap()
+            .borrow_mut()
+            .get_op_mut::<Function>(self.id)
+            .0 = name.to_string();
     }
 
     /// Convert tensor to a shapeless tensor
@@ -95,13 +109,14 @@ impl<S: Shape> GraphTensor<S> {
 
     /// Get the contiguous data of the tensor
     pub fn data(&self) -> Vec<f32> {
-        let tensor = self.graph().get_tensor_ref(self.id, 0).unwrap();
+        let graph = self.graph().unwrap();
+        let tensor = graph.get_tensor_ref(self.id, 0).unwrap();
         let orig_data = tensor.downcast_ref::<Vec<f32>>().unwrap();
         let mut st = self.shape;
         if !st.is_reshaped() {
             return orig_data.clone();
         }
-        st.resolve_global_dyn_dims(&self.graph().dyn_map);
+        st.resolve_global_dyn_dims(&self.graph().unwrap().borrow().dyn_map.as_ref().borrow());
         let mut data = vec![0.; st.n_elements().to_usize().unwrap()];
         let (ind, val) = (
             st.index_expression_no_simplify(),
@@ -121,15 +136,21 @@ impl<S: ConstShape> GraphTensor<S> {
     /// Set the value of the tensor matching the constant shape
     pub fn set<T: Data + Clone, D: ToData<S, T>>(self, data: D) -> Self {
         let data = data.to_data_vec();
-        self.graph().get_op_mut::<Function>(self.id).1 =
-            Box::new(move |_| vec![Tensor::new(data.to_owned())]);
+        self.graph()
+            .unwrap()
+            .borrow_mut()
+            .get_op_mut::<Function>(self.id)
+            .1 = Box::new(move |_| vec![Tensor::new(data.to_owned())]);
         self
     }
 
     /// Set the tensor with a generating closure to be ran at runtime
     pub fn set_deferred(self, loader: impl Fn() -> Vec<f32> + 'static) -> Self {
-        self.graph().get_op_mut::<Function>(self.id).1 =
-            Box::new(move |_| vec![Tensor::new(loader())]);
+        self.graph()
+            .unwrap()
+            .borrow_mut()
+            .get_op_mut::<Function>(self.id)
+            .1 = Box::new(move |_| vec![Tensor::new(loader())]);
         self
     }
 }
@@ -219,7 +240,7 @@ impl<S: Shape> Debug for GraphTensor<S> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         // Print the shape
         let mut shape = self.shape;
-        shape.resolve_global_dyn_dims(&self.graph().dyn_map);
+        shape.resolve_global_dyn_dims(&self.graph().unwrap().borrow().dyn_map.as_ref().borrow());
         let shape = shape.shape_usize();
         writeln!(f, "Tensor with Shape: {:?}", shape)?;
 
@@ -230,42 +251,46 @@ impl<S: Shape> Debug for GraphTensor<S> {
 
 pub trait MarkTensors {
     /// Mark all tensors in this collection to be kept
-    fn keep(&self);
+    fn keep(&self) -> Self;
     /// Mark all tensors in this collection to be retrieved
-    fn retrieve(&self);
+    fn retrieve(&self) -> Self;
     /// Drop all tensors in this collection
     fn drop(&self);
     /// Set data
-    fn set_dyn<T: Data + Clone>(&self, data: T, shape: &[usize]);
+    fn set_dyn<T: Data + Clone>(&self, data: T, shape: &[usize]) -> Self;
 }
 
 impl<S: Shape> MarkTensors for GraphTensor<S> {
-    fn keep(&self) {
-        GraphTensor::keep(*self);
+    fn keep(&self) -> Self {
+        GraphTensor::keep(&mut self.clone());
+        self.clone()
     }
 
-    fn retrieve(&self) {
-        GraphTensor::retrieve(*self);
+    fn retrieve(&self) -> Self {
+        GraphTensor::retrieve(&mut self.clone()).clone()
     }
     fn drop(&self) {
         GraphTensor::drop(self);
     }
-    fn set_dyn<T: Data + Clone>(&self, data: T, shape: &[usize]) {
-        GraphTensor::set_dyn(*self, data, shape);
+    fn set_dyn<T: Data + Clone>(&self, data: T, shape: &[usize]) -> Self {
+        GraphTensor::set_dyn(self.clone(), data, shape);
+        self.clone()
     }
 }
 
-impl<S: MarkTensors> MarkTensors for Vec<S> {
-    fn keep(&self) {
+impl<S: MarkTensors + Clone> MarkTensors for Vec<S> {
+    fn keep(&self) -> Self {
         for t in self {
             t.keep();
         }
+        self.clone()
     }
 
-    fn retrieve(&self) {
+    fn retrieve(&self) -> Self {
         for t in self {
             t.retrieve();
         }
+        self.clone()
     }
 
     fn drop(&self) {
@@ -273,23 +298,26 @@ impl<S: MarkTensors> MarkTensors for Vec<S> {
             t.drop();
         }
     }
-    fn set_dyn<T: Data + Clone>(&self, data: T, shape: &[usize]) {
+    fn set_dyn<T: Data + Clone>(&self, data: T, shape: &[usize]) -> Self {
         for t in self {
             t.set_dyn(data.clone(), shape);
         }
+        self.clone()
     }
 }
 impl<S: MarkTensors> MarkTensors for &[S] {
-    fn keep(&self) {
+    fn keep(&self) -> Self {
         for t in *self {
             t.keep();
         }
+        self
     }
 
-    fn retrieve(&self) {
+    fn retrieve(&self) -> Self {
         for t in *self {
             t.retrieve();
         }
+        self
     }
 
     fn drop(&self) {
@@ -297,10 +325,11 @@ impl<S: MarkTensors> MarkTensors for &[S] {
             t.drop();
         }
     }
-    fn set_dyn<T: Data + Clone>(&self, data: T, shape: &[usize]) {
+    fn set_dyn<T: Data + Clone>(&self, data: T, shape: &[usize]) -> Self {
         for t in *self {
             t.set_dyn(data.clone(), shape);
         }
+        self
     }
 }
 
@@ -308,19 +337,22 @@ macro_rules! tuple_impls {
     ([$($name:ident),+] , [$($idx:tt),+]) => {
         impl<
         $($name:
-            MarkTensors, )+
+            MarkTensors + Clone, )+
         > MarkTensors for ($($name,)+) {
-            fn keep(&self) {
+            fn keep(&self) -> Self {
                 $(self.$idx.keep();)+
+                self.clone()
             }
-            fn retrieve(&self) {
+            fn retrieve(&self) -> Self {
                 $(self.$idx.retrieve();)+
+                self.clone()
             }
             fn drop(&self) {
                 $(self.$idx.drop();)+
             }
-            fn set_dyn<T: Data + Clone>(&self, data: T, shape: &[usize]) {
+            fn set_dyn<T: Data + Clone>(&self, data: T, shape: &[usize]) -> Self {
                 $(self.$idx.set_dyn(data.clone(), shape);)+
+                self.clone()
             }
         }
     };

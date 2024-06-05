@@ -538,7 +538,7 @@ impl<T: MetalFloat> MetalQuantizedCompiler<T> {
 
 impl<T: MetalFloat + Default> Compiler for MetalQuantizedCompiler<T> {
     type Output = ();
-    fn compile<To: ToIdsMut>(&self, graph: &mut Graph, _: To) {
+    fn compile<To: ToIdsMut>(&self, graph: &GraphWrapper, _: To) {
         let device = Device::system_default().unwrap();
         let queue = device.new_command_queue();
         let weight_ids = self.quantized_weights.clone();
@@ -587,7 +587,7 @@ impl<T: MetalFloat> SerializeQuantizedGraph<T> {
 
 impl<T: MetalFloat + Default> Compiler for SerializeQuantizedGraph<T> {
     type Output = ();
-    fn compile<To: ToIdsMut>(&self, graph: &mut Graph, mut nodes: To) {
+    fn compile<To: ToIdsMut>(&self, graph: &GraphWrapper, mut nodes: To) {
         // Serialize and save graph away
         let mut ops = vec![];
         for node in graph.node_indices().collect::<Vec<_>>() {
@@ -689,7 +689,7 @@ impl<T> DeserializeQuantizedGraph<T> {
 
 impl<T: MetalFloat> Compiler for DeserializeQuantizedGraph<T> {
     type Output = ();
-    fn compile<To: ToIdsMut>(&self, graph: &mut Graph, mut ids: To) -> Self::Output {
+    fn compile<To: ToIdsMut>(&self, graph: &GraphWrapper, mut ids: To) -> Self::Output {
         let mut value = Value::from_str(&self.0).unwrap();
         let dev = Device::system_default().unwrap();
         let queue = dev.new_command_queue();

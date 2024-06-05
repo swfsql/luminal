@@ -117,7 +117,7 @@ mod tests {
 
     #[test]
     fn test_matrix_vector() {
-        let mut cx = Graph::new();
+        let cx = GraphWrapper::default();
         let (a_vec, b_vec) = (random_vec(3), random_vec(6));
         let a = cx.tensor::<R1<3>>().set(a_vec.clone());
         let b = cx.tensor::<R2<3, 2>>().set(b_vec.clone());
@@ -136,14 +136,13 @@ mod tests {
 
     #[test]
     fn test_matmul() {
-        let mut cx = Graph::new();
+        let cx = Graph::new();
         let (a_data, b_data) = (random_vec(6), random_vec(9));
         let a = cx.tensor::<R2<2, 3>>();
-        a.set(a_data.clone());
+        let a = a.set(a_data.clone());
         let b = cx.tensor::<R2<3, 3>>();
-        b.set(b_data.clone());
-        let c = a.matmul(b);
-        c.retrieve();
+        let b = b.set(b_data.clone());
+        let c = a.matmul(b).retrieve();
 
         cx.execute();
 
@@ -157,14 +156,13 @@ mod tests {
 
     #[test]
     fn test_batch_matmul() {
-        let mut cx = Graph::new();
+        let cx = Graph::new();
         let (a_data, b_data) = (random_vec(12), random_vec(8));
         let a = cx.tensor::<R3<2, 3, 2>>();
-        a.set(a_data.clone());
+        let a = a.set(a_data.clone());
         let b = cx.tensor::<R2<2, 4>>();
-        b.set(b_data.clone());
-        let c = a.matmul(b);
-        c.retrieve();
+        let b = b.set(b_data.clone());
+        let c = a.matmul(b).retrieve();
 
         cx.execute();
 
@@ -178,14 +176,13 @@ mod tests {
 
     #[test]
     fn test_batch_batch_matmul() {
-        let mut cx = Graph::new();
+        let cx = Graph::new();
         let (a_data, b_data) = (random_vec(6), random_vec(6));
         let a = cx.tensor::<R3<1, 2, 3>>();
-        a.set(a_data.clone());
+        let a = a.set(a_data.clone());
         let b = cx.tensor::<R3<1, 2, 3>>();
-        b.set(b_data.clone());
-        let c: GraphTensor<R3<1, 2, 2>> = a.matmul(b.permute::<R3<1, 3, 2>, _>());
-        c.retrieve();
+        let b = b.set(b_data.clone());
+        let c: GraphTensor<R3<1, 2, 2>> = a.matmul(b.permute::<R3<1, 3, 2>, _>()).retrieve();
 
         cx.execute();
 
@@ -199,15 +196,14 @@ mod tests {
 
     #[test]
     fn test_batch_batch_matmul2() {
-        let mut cx = Graph::new();
+        let cx = Graph::new();
         let (a_data, b_data) = (random_vec(4), random_vec(6));
         let a = cx.tensor::<(Dyn<'a'>, Dyn<'b'>)>();
-        a.set_dyn(a_data.clone(), &[2, 2]);
+        let a = a.set_dyn(a_data.clone(), &[2, 2]);
         let a = a.expand::<(LConst<1>, Dyn<'a'>, Dyn<'b'>), _>();
         let b = cx.tensor::<(LConst<1>, Dyn<'b'>, LConst<3>)>();
-        b.set_dyn(b_data.clone(), &[1, 2, 3]);
-        let c = a.matmul(b);
-        c.retrieve();
+        let b = b.set_dyn(b_data.clone(), &[1, 2, 3]);
+        let c = a.matmul(b).retrieve();
 
         cx.execute();
 

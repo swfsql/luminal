@@ -2,8 +2,10 @@
 
 use crate::prelude::*;
 use std::{
+    cell::RefCell,
     io::Write,
     ops::{Deref, DerefMut},
+    rc::Rc,
     time::Duration,
 };
 
@@ -15,6 +17,114 @@ use rustc_hash::{FxHashMap, FxHashSet};
 
 pub type MainGraph = StableGraph<Box<dyn Operator>, Dependency>;
 
+// pub struct GraphWrapper(pub Rc<RefCell<Graph>>);
+// pub type GraphWrapper = Rc<RefCell<Graph>>;
+#[derive(Default)]
+pub struct GraphWrapper(pub Rc<RefCell<Graph>>);
+
+impl GraphWrapper {
+    /// Try to remove the tensor data from the graph
+    pub fn get_tensor(&self, id: NodeIndex, ind: u8) -> Option<Tensor> {
+        self.borrow_mut().get_tensor(id, ind)
+    }
+
+    /// Try to get the tensor data in the graph
+    pub fn get_tensor_ref(&self, id: NodeIndex, ind: u8) -> Option<Tensor> {
+        self.borrow().get_tensor_ref(id, ind)
+    }
+
+    /// Delete the tensor data from the graph
+    pub fn drop_tensors<T: ToIds>(&self, tensors: T) {
+        self.borrow_mut().drop_tensors(tensors)
+    }
+
+    /// Mark tensors to be kept
+    pub fn keep_tensors<T: ToIds>(&self, tensors: T) {
+        self.borrow_mut().keep_tensors(tensors)
+    }
+
+    /// Set a tensor's data
+    pub fn set_tensor(&self, id: NodeIndex, ind: u8, tensor: Tensor) {
+        self.borrow_mut().set_tensor(id, ind, tensor)
+    }
+
+    /// Set a dynamic dimension
+    pub fn set_dyn_dim(&self, dimension: char, val: usize) {
+        self.borrow_mut().set_dyn_dim(dimension, val)
+    }
+
+    /// Create a new tensor with shape S
+    pub fn tensor<S: Shape>(&self) -> GraphTensor<S> {
+        self.named_tensor("Tensor")
+    }
+
+    /// Create a new tensor with shape S and a name. This name will show up on the graph when displayed
+    pub fn named_tensor<S: Shape>(&self, name: &str) -> GraphTensor<S> {
+        let mut _self = self.borrow_mut();
+        let name = name.to_string();
+        let id = _self.graph.add_node(Box::new(Function(
+            format!("{name} Load"),
+            Box::new(move |_| panic!("You must set a value for this tensor! ({name})")),
+        )));
+        GraphTensor {
+            id,
+            graph_ref: Rc::downgrade(self.as_ref()),
+            shape: S::to_tracker(),
+            _phantom: Default::default(),
+        }
+    }
+
+    /// Compile the graph using the given compiler
+    pub fn compile<T: ToIdsMut, C: Compiler>(&self, compiler: C, remap: T) -> C::Output {
+        let output = compiler.compile(self, remap);
+        self.toposort();
+        self.reset();
+        output
+    }
+
+    /// Refresh the internally sorted graph
+    pub(crate) fn toposort(&self) {
+        self.borrow_mut().toposort()
+    }
+
+    /// Swap the tensors with these ids
+    pub fn swap_tensors<A: Shape, B: Shape>(&self, a: GraphTensor<A>, b: GraphTensor<B>) {
+        self.borrow_mut().swap_tensors(a, b)
+    }
+
+    /// Clear any remaining tensors that may be around from old executions
+    pub fn reset(&self) {
+        self.borrow_mut().reset()
+    }
+
+    /// Execute the graph.
+    pub fn execute(&self) {
+        self.borrow_mut().execute()
+    }
+
+    /// Execute the graph without deleting intermediate tensors
+    pub fn execute_no_delete(&self) {
+        self.borrow_mut().execute_no_delete()
+    }
+
+    /// Execute the graph with debug prints
+    pub fn execute_debug(&self) {
+        self.borrow_mut().execute_debug()
+    }
+}
+
+impl AsRef<Rc<RefCell<Graph>>> for GraphWrapper {
+    fn as_ref(&self) -> &Rc<RefCell<Graph>> {
+        &self.0
+    }
+}
+
+impl AsMut<Rc<RefCell<Graph>>> for GraphWrapper {
+    fn as_mut(&mut self) -> &mut Rc<RefCell<Graph>> {
+        &mut self.0
+    }
+}
+
 /// A Luminal compute graph.
 ///
 /// All computation is represented as a directed acyclic graph.
@@ -24,7 +134,7 @@ pub struct Graph {
     /// The store of tensors in the graph. Indexed by node index and output index.
     pub tensors: FxHashMap<(NodeIndex, u8), Tensor>,
     /// A map of dynamic dimensions to concrete dimension sizes
-    pub dyn_map: FxHashMap<char, usize>,
+    pub dyn_map: Rc<RefCell<FxHashMap<char, usize>>>,
     /// Edge weights: (Input index, Output index, Input shape)
     pub graph: MainGraph,
     /// Tensors marked in this set will not get deleted when the graph is ran
@@ -75,8 +185,9 @@ impl Dependency {
 
 impl Graph {
     /// Create a new graph
-    pub fn new() -> Graph {
-        Graph::default()
+    #[allow(clippy::new_ret_no_self)]
+    pub fn new() -> GraphWrapper {
+        GraphWrapper(Rc::new(RefCell::new(Graph::default())))
     }
 
     /// Try to remove the tensor data from the graph
@@ -85,8 +196,8 @@ impl Graph {
     }
 
     /// Try to get the tensor data in the graph
-    pub fn get_tensor_ref(&self, id: NodeIndex, ind: u8) -> Option<&Tensor> {
-        self.tensors.get(&(id, ind))
+    pub fn get_tensor_ref(&self, id: NodeIndex, ind: u8) -> Option<Tensor> {
+        self.tensors.get(&(id, ind)).cloned()
     }
 
     /// Delete the tensor data from the graph
@@ -110,34 +221,7 @@ impl Graph {
 
     /// Set a dynamic dimension
     pub fn set_dyn_dim(&mut self, dimension: char, val: usize) {
-        self.dyn_map.insert(dimension, val);
-    }
-
-    /// Create a new tensor with shape S
-    pub fn tensor<S: Shape>(&mut self) -> GraphTensor<S> {
-        self.named_tensor("Tensor")
-    }
-
-    /// Create a new tensor with shape S and a name. This name will show up on the graph when displayed
-    pub fn named_tensor<S: Shape>(&mut self, name: &str) -> GraphTensor<S> {
-        let name = name.to_string();
-        GraphTensor {
-            id: self.graph.add_node(Box::new(Function(
-                format!("{name} Load"),
-                Box::new(move |_| panic!("You must set a value for this tensor! ({name})")),
-            ))),
-            graph_ref: self,
-            shape: S::to_tracker(),
-            _phantom: Default::default(),
-        }
-    }
-
-    /// Compile the graph using the given compiler
-    pub fn compile<T: ToIdsMut, C: Compiler>(&mut self, compiler: C, remap: T) -> C::Output {
-        let output = compiler.compile(self, remap);
-        self.toposort();
-        self.reset();
-        output
+        self.dyn_map.borrow_mut().insert(dimension, val);
     }
 
     /// Refresh the internally sorted graph
@@ -208,8 +292,9 @@ impl Graph {
                 get_source_tensors(&self.no_delete, &mut self.tensors, src_ids, &consumers);
 
             // Substitute in the dyn dims
+            let dyn_map = &self.dyn_map.as_ref().borrow();
             for (_, st) in srcs.iter_mut() {
-                st.resolve_global_dyn_dims_stack(&self.dyn_map, &mut dim_stack);
+                st.resolve_global_dyn_dims_stack(dyn_map, &mut dim_stack);
             }
 
             // Execute
@@ -240,16 +325,15 @@ impl Graph {
             let mut srcs = src_ids
                 .iter()
                 .map(|(id, ind, st)| {
-                    (
-                        InputTensor::Borrowed(self.tensors.get(&(*id, *ind)).unwrap()),
-                        *st,
-                    )
+                    let tensor = self.tensors.get(&(*id, *ind)).unwrap();
+                    (InputTensor::new(tensor.clone()), *st)
                 })
                 .collect_vec();
 
             // Substitute in the dyn dims
+            let dyn_map = &self.dyn_map.as_ref().borrow();
             for (_, st) in srcs.iter_mut() {
-                st.resolve_global_dyn_dims_stack(&self.dyn_map, &mut dim_stack);
+                st.resolve_global_dyn_dims_stack(dyn_map, &mut dim_stack);
             }
 
             // All sources are ready, execute
@@ -298,8 +382,9 @@ impl Graph {
                 get_source_tensors(&self.no_delete, &mut self.tensors, src_ids, &consumers);
 
             // Substitute in the dyn dims
+            let dyn_map = &self.dyn_map.as_ref().borrow();
             for (_, st) in srcs.iter_mut() {
-                st.resolve_global_dyn_dims_stack(&self.dyn_map, &mut dim_stack);
+                st.resolve_global_dyn_dims_stack(dyn_map, &mut dim_stack);
             }
 
             // All sources are ready
@@ -384,23 +469,21 @@ impl DerefMut for Graph {
 /// Get source tensor array for a node
 fn get_source_tensors<'a>(
     no_delete: &'a FxHashSet<NodeIndex>,
-    tensors: *mut FxHashMap<(NodeIndex, u8), Tensor>,
+    tensors: &mut FxHashMap<(NodeIndex, u8), Tensor>,
+    // tensors: *mut FxHashMap<(NodeIndex, u8), Tensor>,
     src_ids: &'a [(NodeIndex, u8, ShapeTracker)],
     consumers: &'a FxHashMap<(NodeIndex, u8), usize>,
-) -> Vec<(InputTensor<'a>, ShapeTracker)> {
+) -> Vec<(InputTensor, ShapeTracker)> {
     let mut srcs = vec![];
     for (id, ind, sh) in src_ids {
         let id = &(*id, *ind);
         if consumers[id] == 1 && !no_delete.contains(&id.0) {
-            srcs.push((
-                InputTensor::Owned(unsafe { tensors.as_mut().unwrap() }.remove(id).unwrap()),
-                *sh,
-            ));
+            let tensor = tensors.remove(id).unwrap();
+            debug_assert!(tensor.is_owned());
+            srcs.push((InputTensor::new(tensor), *sh));
         } else {
-            srcs.push((
-                InputTensor::Borrowed(unsafe { tensors.as_ref().unwrap() }.get(id).unwrap()),
-                *sh,
-            ));
+            let tensor = tensors.get(id).unwrap();
+            srcs.push((InputTensor::new(tensor.clone()), *sh));
         }
     }
     srcs

@@ -1,4 +1,4 @@
-use std::{any::Any, marker::PhantomData, sync::Arc};
+use std::{any::Any, cell::RefCell, marker::PhantomData, rc::Rc, sync::Arc};
 
 use cudarc::driver::{CudaDevice, CudaFunction, DeviceRepr, LaunchAsync, LaunchConfig};
 
@@ -20,7 +20,7 @@ pub struct CudaSub<T> {
     function: CudaFunction,
     device: Arc<CudaDevice>,
     dyn_symbols: Vec<char>,
-    dyn_map: *const FxHashMap<char, usize>,
+    dyn_map: Rc<RefCell<FxHashMap<char, usize>>>,
     _phantom: PhantomData<T>,
 }
 crate::debug_type!(CudaSub);
@@ -30,7 +30,7 @@ impl<T: CudaFloat> CudaSub<T> {
         a_shape: ShapeTracker,
         b_shape: ShapeTracker,
         device: Arc<CudaDevice>,
-        dyn_map: *const FxHashMap<char, usize>,
+        dyn_map: Rc<RefCell<FxHashMap<char, usize>>>,
     ) -> Self {
         let (a_idx, a_valid) = get_idx_valid_exps(a_shape);
         let (b_idx, b_valid) = get_idx_valid_exps(b_shape);
@@ -70,7 +70,11 @@ impl<T: CudaFloat> Operator for CudaSub<T> {
             b.as_kernel_param(),
             inp_size.as_kernel_param(),
         ];
-        input_dyn_dims(&mut params, &self.dyn_symbols, self.dyn_map);
+        input_dyn_dims(
+            &mut params,
+            &self.dyn_symbols,
+            &self.dyn_map.as_ref().borrow(),
+        );
         unsafe {
             self.function
                 .clone()
@@ -94,7 +98,7 @@ pub struct SubtractionCompiler<T: CudaFloat>(PhantomData<T>);
 
 impl<T: CudaFloat> Compiler for SubtractionCompiler<T> {
     type Output = ();
-    fn compile<To: ToIdsMut>(&self, graph: &mut Graph, _: To) {
+    fn compile<To: ToIdsMut>(&self, graph: &GraphWrapper, _: To) {
         let dev = CudaDevice::new(0).unwrap();
         let (lhs, rhs) = (node(), node());
         let mul = binary::<CudaMul<T>>(rhs.clone(), constant::<T>(-1.));
@@ -104,20 +108,21 @@ impl<T: CudaFloat> Compiler for SubtractionCompiler<T> {
             if s.check_no_delete(&[add.id]) {
                 continue;
             }
+            let graph_ref = graph.borrow();
             let add = s.get(&add);
-            let (a, a_edge) = graph
+            let (a, a_edge) = graph_ref
                 .graph
                 .edges_connecting(s.get(&lhs), add)
                 .next()
                 .map(|e| (e.source(), e.weight().as_data().unwrap()))
                 .unwrap();
-            let (b, b_edge) = graph
+            let (b, b_edge) = graph_ref
                 .graph
                 .edges_connecting(s.get(&rhs), s.get(&mul))
                 .next()
                 .map(|e| (e.source(), e.weight().as_data().unwrap()))
                 .unwrap();
-            let b_final_shape = graph
+            let b_final_shape = graph_ref
                 .graph
                 .edges_connecting(s.get(&mul), add)
                 .next()
@@ -129,19 +134,19 @@ impl<T: CudaFloat> Compiler for SubtractionCompiler<T> {
             if b_final_shape.is_reshaped() {
                 continue;
             }
+            let dyn_map = graph_ref.dyn_map.clone();
+            drop(graph_ref);
+
             let sub = graph
-                .add_op(CudaSub::<T>::new(
-                    a_edge.2,
-                    b_edge.2,
-                    dev.clone(),
-                    &graph.dyn_map,
-                ))
+                .add_op(CudaSub::<T>::new(a_edge.2, b_edge.2, dev.clone(), dyn_map))
                 .input(a, a_edge.1, a_edge.2)
                 .input(b, b_edge.1, b_edge.2)
                 .finish();
-            move_outgoing_edge(add, sub, &mut graph.graph);
+            let mut graph_mut = graph.borrow_mut();
+            move_outgoing_edge(add, sub, &mut graph_mut.graph);
 
-            graph.graph.remove_node(add);
+            graph_mut.graph.remove_node(add);
+            drop(graph_mut);
             s.try_delete();
         }
     }
@@ -152,7 +157,7 @@ pub struct CudaEqual<T> {
     function: CudaFunction,
     device: Arc<CudaDevice>,
     dyn_symbols: Vec<char>,
-    dyn_map: *const FxHashMap<char, usize>,
+    dyn_map: Rc<RefCell<FxHashMap<char, usize>>>,
     _phantom: PhantomData<T>,
 }
 crate::debug_type!(CudaEqual);
@@ -162,7 +167,7 @@ impl<T: CudaFloat> CudaEqual<T> {
         a_shape: ShapeTracker,
         b_shape: ShapeTracker,
         device: Arc<CudaDevice>,
-        dyn_map: *const FxHashMap<char, usize>,
+        dyn_map: Rc<RefCell<FxHashMap<char, usize>>>,
     ) -> Self {
         let (a_idx, a_valid) = get_idx_valid_exps(a_shape);
         let (b_idx, b_valid) = get_idx_valid_exps(b_shape);
@@ -202,7 +207,11 @@ impl<T: CudaFloat> Operator for CudaEqual<T> {
             b.as_kernel_param(),
             inp_size.as_kernel_param(),
         ];
-        input_dyn_dims(&mut params, &self.dyn_symbols, self.dyn_map);
+        input_dyn_dims(
+            &mut params,
+            &self.dyn_symbols,
+            &self.dyn_map.as_ref().borrow(),
+        );
         unsafe {
             self.function
                 .clone()
@@ -226,7 +235,7 @@ pub struct EqualCompiler<T: CudaFloat>(PhantomData<T>);
 
 impl<T: CudaFloat> Compiler for EqualCompiler<T> {
     type Output = ();
-    fn compile<To: ToIdsMut>(&self, graph: &mut Graph, _: To) {
+    fn compile<To: ToIdsMut>(&self, graph: &GraphWrapper, _: To) {
         let dev = CudaDevice::new(0).unwrap();
         let one = constant::<T>(1.);
         let (lhs, rhs) = (node(), node());
@@ -242,9 +251,10 @@ impl<T: CudaFloat> Compiler for EqualCompiler<T> {
             if s.check_no_delete(&[eq.id]) {
                 continue;
             }
+            let graph_ref = graph.borrow();
             let (lhs, rhs) = (s.get(&lhs), s.get(&rhs));
             let eq = s.get(&eq);
-            let a_edge = graph
+            let a_edge = graph_ref
                 .graph
                 .edges_connecting(lhs, s.get(&lt1))
                 .next()
@@ -252,7 +262,7 @@ impl<T: CudaFloat> Compiler for EqualCompiler<T> {
                 .weight()
                 .as_data()
                 .unwrap();
-            let b_edge = graph
+            let b_edge = graph_ref
                 .graph
                 .edges_connecting(rhs, s.get(&lt1))
                 .next()
@@ -260,19 +270,23 @@ impl<T: CudaFloat> Compiler for EqualCompiler<T> {
                 .weight()
                 .as_data()
                 .unwrap();
+            let dyn_map = graph_ref.dyn_map.clone();
+            drop(graph_ref);
             let equals = graph
                 .add_op(CudaEqual::<T>::new(
                     a_edge.2,
                     b_edge.2,
                     dev.clone(),
-                    &graph.dyn_map,
+                    dyn_map,
                 ))
                 .input(lhs, a_edge.1, a_edge.2)
                 .input(rhs, b_edge.1, b_edge.2)
                 .finish();
-            move_outgoing_edge(eq, equals, &mut graph.graph);
+            let mut graph_mut = graph.borrow_mut();
+            move_outgoing_edge(eq, equals, &mut graph_mut.graph);
 
-            graph.graph.remove_node(eq);
+            graph_mut.graph.remove_node(eq);
+            drop(graph_mut);
             s.try_delete();
         }
     }
@@ -355,7 +369,7 @@ pub struct GatherCompiler<T: CudaFloat>(PhantomData<T>);
 
 impl<T: CudaFloat> Compiler for GatherCompiler<T> {
     type Output = ();
-    fn compile<To: ToIdsMut>(&self, graph: &mut Graph, _: To) {
+    fn compile<To: ToIdsMut>(&self, graph: &GraphWrapper, _: To) {
         let dev = CudaDevice::new(0).unwrap();
         let indexes = node();
         let ind_copy = unary::<CudaCopyToDevice<T>>(indexes.clone());
@@ -368,7 +382,8 @@ impl<T: CudaFloat> Compiler for GatherCompiler<T> {
             if s.check_no_delete(&[sum_reduce.id, embeddings.id, indexes.id]) {
                 continue;
             }
-            let emb_shape = graph
+            let graph_ref = graph.borrow();
+            let emb_shape = graph_ref
                 .edges_connecting(s.get(&embeddings), s.get(&mul))
                 .next()
                 .unwrap()
@@ -377,7 +392,7 @@ impl<T: CudaFloat> Compiler for GatherCompiler<T> {
                 .unwrap()
                 .2;
             let embed_dim = emb_shape.shape()[2].to_usize().unwrap();
-            let index_shape = graph
+            let index_shape = graph_ref
                 .edges_connecting(s.get(&indexes), s.get(&ind_copy))
                 .next()
                 .unwrap()
@@ -385,13 +400,16 @@ impl<T: CudaFloat> Compiler for GatherCompiler<T> {
                 .as_data()
                 .unwrap()
                 .2;
+            drop(graph_ref);
             let gather = graph
                 .add_op(CudaGather::<T>::new(dev.clone(), embed_dim))
                 .input(s.get(&indexes), 0, index_shape)
                 .input(s.get(&embeddings), 0, emb_shape)
                 .finish();
-            move_outgoing_edge(s.get(&sum_reduce), gather, graph);
-            graph.remove_node(s.get(&sum_reduce));
+            let mut graph_mut = graph.borrow_mut();
+            move_outgoing_edge(s.get(&sum_reduce), gather, &mut graph_mut);
+            graph_mut.remove_node(s.get(&sum_reduce));
+            drop(graph_mut);
             s.try_delete();
         }
     }

@@ -9,16 +9,16 @@ use rand::{rngs::ThreadRng, thread_rng, Rng};
 
 fn main() {
     // Setup gradient graph
-    let mut cx = Graph::new();
-    let model = <(Linear<8, 16>, Swish, Linear<16, 16>, Swish, Linear<16, 5>)>::initialize(&mut cx);
+    let cx = Graph::new();
+    let model = <(Linear<8, 16>, Swish, Linear<16, 16>, Swish, Linear<16, 5>)>::initialize(&cx);
     let mut input = cx.tensor::<R1<8>>();
     let mut target = cx.tensor::<R1<5>>();
-    let mut output = model.forward(input).retrieve();
-    let mut loss = mse_loss(output, target).retrieve();
+    let mut output = model.forward(input.clone()).retrieve();
+    let mut loss = mse_loss(output.clone(), target.clone()).retrieve();
 
     let mut weights = params(&model);
-    let grads = cx.compile(Autograd::new(&weights, loss), ());
-    let (mut new_weights, lr) = sgd_on_graph(&mut cx, &weights, &grads);
+    let grads = cx.compile(Autograd::new(&weights, loss.clone()), ());
+    let (mut new_weights, lr) = sgd_on_graph(&cx, &weights, &grads);
     cx.keep_tensors(&new_weights);
     cx.keep_tensors(&weights);
     lr.set(1e-1);
@@ -69,12 +69,12 @@ fn main() {
     while acc_avg.value < 0.995 {
         // Generate problem
         let (problem, answer) = make_problem(&mut rng);
-        input.set(problem);
-        target.set(answer);
+        input.clone().set(problem);
+        target.clone().set(answer);
 
         // Execute graph and update weights
         cx.execute();
-        transfer_data_same_graph(&new_weights, &weights, &mut cx);
+        transfer_data_same_graph(&new_weights, &weights, &cx);
 
         // Report progress
         loss_avg.update(loss.data()[0]);

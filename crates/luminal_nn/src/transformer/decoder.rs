@@ -16,7 +16,7 @@ pub struct TransformerDecoder<
 impl<const DIM: usize, const FF: usize, const HEADS: usize, const LAYERS: usize> InitModule
     for TransformerDecoder<DIM, FF, HEADS, LAYERS>
 {
-    fn initialize(cx: &mut Graph) -> Self {
+    fn initialize(cx: &GraphWrapper) -> Self {
         Self {
             layers: (0..LAYERS).map(|_| InitModule::initialize(cx)).collect(),
         }
@@ -83,7 +83,7 @@ impl<
         ),
     ) -> Self::Output {
         for layer in &self.layers {
-            input = layer.forward((input, from_enc));
+            input = layer.forward((input, from_enc.clone()));
         }
         input
     }
@@ -99,7 +99,7 @@ pub struct TransformerDecoderBlock<const DIM: usize, const FF: usize, const HEAD
 impl<const DIM: usize, const FF: usize, const HEADS: usize> InitModule
     for TransformerDecoderBlock<DIM, FF, HEADS>
 {
-    fn initialize(cx: &mut Graph) -> Self {
+    fn initialize(cx: &GraphWrapper) -> Self {
         Self {
             cross_attention: InitModule::initialize(cx),
             self_attention: InitModule::initialize(cx),
@@ -161,11 +161,13 @@ impl<
             GraphTensor<(B, S2, Const<DIM>)>,
         ),
     ) -> Self::Output {
-        let y = self.self_attention.forward(x);
+        let y = self.self_attention.forward(x.clone());
         let x = (y + x).layer_norm::<Axis<2>, _>(1e-5);
-        let y = self.cross_attention.forward((from_enc, x, from_enc));
+        let y = self
+            .cross_attention
+            .forward((from_enc.clone(), x.clone(), from_enc));
         let x = (y + x).layer_norm::<Axis<2>, _>(1e-5);
-        let y = self.ff.forward(x);
+        let y = self.ff.forward(x.clone());
         (y + x).layer_norm::<Axis<2>, _>(1e-5)
     }
 }
@@ -186,62 +188,72 @@ mod tests {
     use super::TransformerDecoderBlock;
     #[test]
     fn test_transformer_decoder_block() {
-        let mut cx = Graph::new();
-        let model: TransformerDecoderBlock<3, 4, 1> = InitModule::initialize(&mut cx);
+        let cx = Graph::new();
+        let model: TransformerDecoderBlock<3, 4, 1> = InitModule::initialize(&cx);
         model
             .self_attention
             .w_k
             .weight
+            .clone()
             .set(vec![1., 22., 3., 1., 2., 3., 1., 2., 3.]);
         model
             .self_attention
             .w_q
             .weight
+            .clone()
             .set(vec![3., 2., 3., 1.3, 2., 3., 3., 2., 3.]);
         model
             .self_attention
             .w_v
             .weight
+            .clone()
             .set(vec![-1., 12., 3., -1., 2., -3., 11., 2., 3.]);
         model
             .self_attention
             .w_o
             .weight
+            .clone()
             .set(vec![1., 22., 3., 1., 2., 3., 1., 2., 3.]);
         model
             .cross_attention
             .w_k
             .weight
+            .clone()
             .set(vec![1., 22., 3., 1., 2., 3., 1., 2., 3.]);
         model
             .cross_attention
             .w_q
             .weight
+            .clone()
             .set(vec![3., 2., 3., 1.3, 2., 3., 3., 2., 3.]);
         model
             .cross_attention
             .w_v
             .weight
+            .clone()
             .set(vec![-1., 12., 3., -1., 2., -3., 11., 2., 3.]);
         model
             .cross_attention
             .w_o
             .weight
+            .clone()
             .set(vec![1., 22., 3., 1., 2., 3., 1., 2., 3.]);
         model
             .ff
             .0
             .weight
+            .clone()
             .set(vec![-1., 12., 3., -1., 2., -3., 11., 2., 3., 11., 2., 3.]);
         model
             .ff
             .2
             .weight
+            .clone()
             .set(vec![-1., 12., 3., -1., 2., -3., 11., 2., 3., 3., -1., 2.]);
 
         let a = cx.tensor::<(Dyn<'d'>, Const<3>)>();
         let e = cx.tensor::<(Dyn<'e'>, Const<3>)>();
-        let b = model.forward((a, e));
+        let b = model.forward((a.clone(), e.clone()));
 
         a.set_dyn(vec![-1., 2., 3., 3., 3., -1.], &[2, 3]);
         e.set_dyn(vec![-1., 2., 3., 3., 3., -1., -1., 2., 3.], &[3, 3]);

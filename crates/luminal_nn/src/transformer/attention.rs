@@ -19,7 +19,7 @@ pub struct MultiHeadSelfAttention<
 impl<const DIM: usize, const K_DIM: usize, const V_DIM: usize, const HEADS: usize> InitModule
     for MultiHeadSelfAttention<DIM, K_DIM, V_DIM, HEADS>
 {
-    fn initialize(cx: &mut Graph) -> Self {
+    fn initialize(cx: &GraphWrapper) -> Self {
         Self {
             w_q: InitModule::initialize(cx),
             w_k: InitModule::initialize(cx),
@@ -109,7 +109,7 @@ impl<
             GraphTensor<(B, S, Const<DIM>)>,
             GraphTensor<(B, S, Const<DIM>)>,
             GraphTensor<(B, S, Const<DIM>)>,
-        )>>::forward(self, (input, input, input))
+        )>>::forward(self, (input.clone(), input.clone(), input))
     }
 }
 
@@ -194,28 +194,32 @@ mod tests {
     use super::MultiHeadSelfAttention;
     #[test]
     fn test_self_attention() {
-        let mut cx = Graph::new();
-        let model: MultiHeadSelfAttention<3, 3, 3, 1> = InitModule::initialize(&mut cx);
+        let cx = Graph::new();
+        let model: MultiHeadSelfAttention<3, 3, 3, 1> = InitModule::initialize(&cx);
         model
             .w_k
             .weight
+            .clone()
             .set(vec![1., 22., 3., 1., 2., 3., 1., 2., 3.]);
         model
             .w_q
             .weight
+            .clone()
             .set(vec![3., 2., 3., 1.3, 2., 3., 3., 2., 3.]);
         model
             .w_v
             .weight
+            .clone()
             .set(vec![-1., 12., 3., -1., 2., -3., 11., 2., 3.]);
         model
             .w_o
             .weight
+            .clone()
             .set(vec![1., 22., 3., 1., 2., 3., 1., 2., 3.]);
 
         let a = cx.tensor::<(Dyn<'d'>, luminal::shape::Const<3>)>();
         let e = cx.tensor::<(Dyn<'e'>, luminal::shape::Const<3>)>();
-        let b = model.forward((e, a, e));
+        let b = model.forward((e.clone(), a.clone(), e.clone()));
 
         a.set_dyn(
             vec![
